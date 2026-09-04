@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener, State, Window};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_store::StoreExt;
 use tracing::debug;
 
@@ -263,6 +264,22 @@ pub struct CertificateInfo {
     pub machine_id: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SigningExportInfo {
+    pub directory: String,
+    pub p12_password: String,
+    pub team_id: String,
+    pub certificate_serial_number: String,
+    pub machine_id: String,
+    pub machine_name: String,
+    pub profile_uuid: String,
+    pub profile_name: String,
+    pub app_identifier: String,
+    pub profile_expiration_date: String,
+    pub is_free_provisioning_profile: Option<bool>,
+}
+
 #[tauri::command]
 pub async fn get_certificates(
     sideloader_state: State<'_, SideloaderMutex>,
@@ -330,4 +347,77 @@ pub async fn delete_app_id(
     dev_session.delete_app_id(&team, &app_id_id, None).await?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn export_signing_bundle(
+    handle: AppHandle,
+    sideloader_state: State<'_, SideloaderMutex>,
+    app_id_id: String,
+    password: Option<String>,
+) -> Result<Option<SigningExportInfo>, AppError> {
+    let directory = handle
+        .dialog()
+        .file()
+        .set_title("Choose a folder for the signing bundle")
+        .blocking_pick_folder();
+    let Some(directory) = directory else {
+        return Ok(None);
+    };
+    let path = directory
+        .into_path()
+        .map_err(|e| AppError::Filesystem("Invalid export directory".into(), e.to_string()))?;
+
+    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let identity = sideloader
+        .get_mut()
+        .export_signing_identity(password.as_deref())
+        .await?;
+    let profile = sideloader
+        .get_mut()
+        .export_provisioning_profile(&app_id_id)
+        .await?;
+
+    std::fs::create_dir_all(&path).map_err(|e| {
+        AppError::Filesystem("Failed to create export directory".into(), e.to_string())
+    })?;
+    std::fs::write(path.join("development.p12"), &identity.p12)
+        .map_err(|e| AppError::Filesystem("Failed to write P12".into(), e.to_string()))?;
+    std::fs::write(
+        path.join("development.mobileprovision"),
+        &profile.mobileprovision,
+    )
+    .map_err(|e| {
+        AppError::Filesystem("Failed to write provisioning profile".into(), e.to_string())
+    })?;
+
+    let metadata = serde_json::json!({
+        "teamId": identity.team_id,
+        "certificateSerialNumber": identity.certificate_serial_number,
+        "machineId": identity.machine_id,
+        "machineName": identity.machine_name,
+        "profileUuid": profile.uuid,
+        "profileName": profile.name,
+        "appIdentifier": profile.app_identifier,
+        "profileExpirationDate": profile.expiration_date,
+        "isFreeProvisioningProfile": profile.is_free_provisioning_profile,
+    });
+    let metadata = serde_json::to_vec_pretty(&metadata)
+        .map_err(|e| AppError::Misc(e.to_string()))?;
+    std::fs::write(path.join("certificate.json"), metadata)
+        .map_err(|e| AppError::Filesystem("Failed to write metadata".into(), e.to_string()))?;
+
+    Ok(Some(SigningExportInfo {
+        directory: path.display().to_string(),
+        p12_password: identity.p12_password,
+        team_id: identity.team_id,
+        certificate_serial_number: identity.certificate_serial_number,
+        machine_id: identity.machine_id,
+        machine_name: identity.machine_name,
+        profile_uuid: profile.uuid,
+        profile_name: profile.name,
+        app_identifier: profile.app_identifier,
+        profile_expiration_date: profile.expiration_date,
+        is_free_provisioning_profile: profile.is_free_provisioning_profile,
+    }))
 }
