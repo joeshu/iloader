@@ -8,6 +8,7 @@ mod sideload;
 mod pairing;
 #[macro_use]
 mod secure_storage;
+mod batch_signing;
 mod error;
 mod ipa_inspection;
 mod logging;
@@ -20,6 +21,7 @@ use crate::{
         list_app_ids, logged_in_as, login_new, login_stored, reset_anisette_state,
         revoke_certificate,
     },
+    batch_signing::batch_sign_ipas,
     device::{
         DeviceInfoMutex, PairingCancelToken, cancel_pairing, list_devices, set_selected_device,
     },
@@ -127,6 +129,7 @@ pub fn run() {
             preflight_signing,
             inspect_ipa_and_match_profiles,
             preflight_ipa,
+            batch_sign_ipas,
             installed_pairing_apps,
             place_pairing_cmd,
             reset_anisette_state,
