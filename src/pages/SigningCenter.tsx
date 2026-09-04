@@ -127,6 +127,25 @@ type BatchSigningProgress = {
   error?: string | null;
 };
 
+type CompleteSigningBundleExportInfo = {
+  archivePath: string;
+  p12Password: string;
+  teamId: string;
+  certificateSerialNumber: string;
+  profiles: Array<{
+    role: string;
+    name: string;
+    bundleIdentifier: string;
+    signingBundleIdentifier: string;
+    profileUuid: string;
+    profileName: string;
+    profileExpirationDate: string;
+    isFreeProvisioningProfile?: boolean | null;
+    archivePath: string;
+  }>;
+  checksums: string[];
+};
+
 type QueueStage =
   | "pending"
   | "scanning"
@@ -167,6 +186,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [signing, setSigning] = useState(false);
+  const [exportingBundlePath, setExportingBundlePath] = useState<string | null>(null);
 
   const loadSnapshot = useCallback(async () => {
     setLoadingSnapshot(true);
@@ -372,6 +392,30 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     }
   }, [readyPaths, outputDirectory, loadSnapshot]);
 
+  const exportSigningBundle = useCallback(async (ipaPath: string) => {
+    setExportingBundlePath(ipaPath);
+    try {
+      const result = await invoke<CompleteSigningBundleExportInfo | null>(
+        "export_ipa_signing_bundle",
+        {
+          ipaPath,
+          password: null,
+        },
+      );
+      if (!result) {
+        toast.info("Signing bundle export canceled.");
+        return;
+      }
+      toast.success(
+        `Exported ${result.profiles.length} profile(s) to ${result.archivePath}. P12 password: ${result.p12Password}`,
+      );
+    } catch (error) {
+      toast.error(`Failed to export signing bundle: ${String(error)}`);
+    } finally {
+      setExportingBundlePath(null);
+    }
+  }, []);
+
   const removeItem = useCallback((path: string) => {
     setQueue((current) => current.filter((item) => item.path !== path));
   }, []);
@@ -473,6 +517,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             const warnings = item.report?.checks.filter(
               (check) => check.severity === "warning",
             );
+            const canExportBundle = item.report?.inspection.allBundleIdsMatched === true;
 
             return (
               <article className="signing-queue-item" key={item.path}>
@@ -489,6 +534,15 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                     <span className={`signing-status status-${item.stage}`}>
                       {stageLabel[item.stage]}
                     </span>
+                    {!signing && !scanning && canExportBundle && (
+                      <button
+                        onClick={() => exportSigningBundle(item.path)}
+                        disabled={exportingBundlePath !== null}
+                        title="Export P12, main/extension provisioning profiles, metadata and SHA-256 checksums"
+                      >
+                        {exportingBundlePath === item.path ? "Exporting…" : "Export bundle"}
+                      </button>
+                    )}
                     {!signing && !scanning && (
                       <button className="signing-remove" onClick={() => removeItem(item.path)}>
                         Remove
