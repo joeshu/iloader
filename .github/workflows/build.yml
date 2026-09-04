@@ -22,22 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "ubuntu-22.04"
-            args: "--bundles deb"
-          - platform: "ubuntu-22.04"
-            args: "--bundles rpm"
-          - platform: "ubuntu-22.04"
-            args: "--bundles appimage"
-          - platform: "ubuntu-22.04-arm"
-            args: "--bundles appimage"
-          - platform: "ubuntu-22.04-arm"
-            args: "--bundles deb"
-          - platform: "ubuntu-22.04-arm"
-            args: "--bundles rpm"
           - platform: "windows-latest"
             args: ""
-          - platform: "macos-latest"
-            args: "--target universal-apple-darwin"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -57,17 +43,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04' || matrix.platform == 'ubuntu-22.04-arm'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf perl make${{ matrix.args == '--bundles appimage' && ' xdg-utils' || '' }}
 
       - name: Add MSVC to PATH
-        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           Write-Host "MSVC environment provided by windows-latest"
