@@ -65,3 +65,12 @@ jobs:
             ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
             ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
           if-no-files-found: error
+
+      - name: Publish Windows installers to Release
+        if: github.event_name == 'release' && github.event.action == 'published'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
+          fail_on_unmatched_files: true
