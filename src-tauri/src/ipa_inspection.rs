@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use isideload::{
     dev::{
@@ -9,7 +9,7 @@ use isideload::{
     sideload::application::Application,
 };
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State, Window};
 
 use crate::{
     error::AppError,
@@ -77,6 +77,53 @@ pub struct AutoIpaPreflightReport {
     pub team_id: String,
     pub inspection: IpaInspectionResult,
     pub checks: Vec<AutoPreflightCheck>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIpaPreflightItem {
+    pub input_path: String,
+    pub report: Option<AutoIpaPreflightReport>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIpaPreflightReport {
+    pub total: usize,
+    pub ready: usize,
+    pub blocked: usize,
+    pub failed: usize,
+    pub items: Vec<BatchIpaPreflightItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIpaPreflightProgress {
+    pub input_path: String,
+    pub stage: String,
+    pub ready: Option<bool>,
+    pub error: Option<String>,
+}
+
+fn emit_batch_preflight_progress(
+    window: &Window,
+    input_path: &str,
+    stage: &str,
+    ready: Option<bool>,
+    error: Option<String>,
+) {
+    if let Err(error) = window.emit(
+        "batch_preflight_progress",
+        BatchIpaPreflightProgress {
+            input_path: input_path.to_string(),
+            stage: stage.to_string(),
+            ready,
+            error,
+        },
+    ) {
+        tracing::warn!("Failed to emit batch preflight progress event: {}", error);
+    }
 }
 
 fn plist_string(bundle: &isideload::sideload::bundle::Bundle, key: &str) -> Option<String> {
@@ -196,50 +243,23 @@ async fn build_inspection(
     })
 }
 
-#[tauri::command]
-pub async fn inspect_ipa_and_match_profiles(
-    sideloader_state: State<'_, SideloaderMutex>,
-    ipa_path: String,
-) -> Result<IpaInspectionResult, AppError> {
-    let application = Application::new(PathBuf::from(&ipa_path))?;
-
-    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
-    let team = sideloader.get_mut().get_team().await?;
-    let dev_session = sideloader.get_mut().get_dev_session();
-    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
-
-    build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await
-}
-
-#[tauri::command]
-pub async fn preflight_ipa(
-    sideloader_state: State<'_, SideloaderMutex>,
-    ipa_path: String,
-    device_udid: Option<String>,
-) -> Result<AutoIpaPreflightReport, AppError> {
-    let application = Application::new(PathBuf::from(&ipa_path))?;
-
-    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
-    let team = sideloader.get_mut().get_team().await?;
-    let team_id = team.team_id.clone();
-    let dev_session = sideloader.get_mut().get_dev_session();
-
-    let certificates = dev_session.list_all_development_certs(&team, None).await?;
-    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
-    let available_app_ids = app_ids_response.available_quantity;
-    let app_ids = app_ids_response.app_ids;
-    let devices = dev_session.list_devices(&team, None).await?;
-    let inspection = build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await?;
-
+fn build_preflight_report(
+    team_id: &str,
+    inspection: IpaInspectionResult,
+    certificate_count: usize,
+    available_app_ids: Option<i64>,
+    device_udid: Option<&str>,
+    device_registered: Option<bool>,
+) -> AutoIpaPreflightReport {
     let mut checks = Vec::new();
     checks.push(AutoPreflightCheck {
         code: "certificate.available".into(),
         severity: AutoPreflightSeverity::Error,
-        passed: !certificates.is_empty(),
-        message: if certificates.is_empty() {
+        passed: certificate_count > 0,
+        message: if certificate_count == 0 {
             "No development certificate is available for the selected team.".into()
         } else {
-            format!("{} development certificate(s) available.", certificates.len())
+            format!("{} development certificate(s) available.", certificate_count)
         },
     });
 
@@ -344,8 +364,8 @@ pub async fn preflight_ipa(
         }
     }
 
-    if let Some(udid) = device_udid.as_deref() {
-        let registered = devices.iter().any(|device| device.device_number == udid);
+    if let Some(udid) = device_udid {
+        let registered = device_registered.unwrap_or(false);
         checks.push(AutoPreflightCheck {
             code: "device.registered".into(),
             severity: AutoPreflightSeverity::Warning,
@@ -373,10 +393,218 @@ pub async fn preflight_ipa(
         .filter(|check| matches!(check.severity, AutoPreflightSeverity::Error))
         .all(|check| check.passed);
 
-    Ok(AutoIpaPreflightReport {
+    AutoIpaPreflightReport {
         ready,
-        team_id,
+        team_id: team_id.to_string(),
         inspection,
         checks,
+    }
+}
+
+#[tauri::command]
+pub async fn inspect_ipa_and_match_profiles(
+    sideloader_state: State<'_, SideloaderMutex>,
+    ipa_path: String,
+) -> Result<IpaInspectionResult, AppError> {
+    let application = Application::new(PathBuf::from(&ipa_path))?;
+
+    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let team = sideloader.get_mut().get_team().await?;
+    let dev_session = sideloader.get_mut().get_dev_session();
+    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
+
+    build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await
+}
+
+#[tauri::command]
+pub async fn preflight_ipa(
+    sideloader_state: State<'_, SideloaderMutex>,
+    ipa_path: String,
+    device_udid: Option<String>,
+) -> Result<AutoIpaPreflightReport, AppError> {
+    let application = Application::new(PathBuf::from(&ipa_path))?;
+
+    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let team = sideloader.get_mut().get_team().await?;
+    let team_id = team.team_id.clone();
+    let dev_session = sideloader.get_mut().get_dev_session();
+
+    let certificates = dev_session.list_all_development_certs(&team, None).await?;
+    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
+    let available_app_ids = app_ids_response.available_quantity;
+    let app_ids = app_ids_response.app_ids;
+    let devices = dev_session.list_devices(&team, None).await?;
+    let device_registered = device_udid
+        .as_deref()
+        .map(|udid| devices.iter().any(|device| device.device_number == udid));
+    let inspection = build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await?;
+
+    Ok(build_preflight_report(
+        &team_id,
+        inspection,
+        certificates.len(),
+        available_app_ids,
+        device_udid.as_deref(),
+        device_registered,
+    ))
+}
+
+#[tauri::command]
+pub async fn preflight_ipas(
+    window: Window,
+    sideloader_state: State<'_, SideloaderMutex>,
+    ipa_paths: Vec<String>,
+    device_udid: Option<String>,
+) -> Result<BatchIpaPreflightReport, AppError> {
+    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let team = sideloader.get_mut().get_team().await?;
+    let team_id = team.team_id.clone();
+    let dev_session = sideloader.get_mut().get_dev_session();
+
+    let certificates = dev_session.list_all_development_certs(&team, None).await?;
+    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
+    let available_app_ids = app_ids_response.available_quantity;
+    let app_ids = app_ids_response.app_ids;
+    let devices = dev_session.list_devices(&team, None).await?;
+    let device_registered = device_udid
+        .as_deref()
+        .map(|udid| devices.iter().any(|device| device.device_number == udid));
+
+    let mut items = Vec::with_capacity(ipa_paths.len());
+    for ipa_path in ipa_paths {
+        emit_batch_preflight_progress(&window, &ipa_path, "scanning", None, None);
+
+        let application = match Application::new(PathBuf::from(&ipa_path)) {
+            Ok(application) => application,
+            Err(error) => {
+                let message = format!("Failed to inspect IPA: {error:?}");
+                emit_batch_preflight_progress(
+                    &window,
+                    &ipa_path,
+                    "failed",
+                    Some(false),
+                    Some(message.clone()),
+                );
+                items.push(BatchIpaPreflightItem {
+                    input_path: ipa_path,
+                    report: None,
+                    error: Some(message),
+                });
+                continue;
+            }
+        };
+
+        match build_inspection(
+            &application,
+            ipa_path.clone(),
+            dev_session,
+            &team,
+            &app_ids,
+        )
+        .await
+        {
+            Ok(inspection) => {
+                let report = build_preflight_report(
+                    &team_id,
+                    inspection,
+                    certificates.len(),
+                    available_app_ids,
+                    device_udid.as_deref(),
+                    device_registered,
+                );
+                emit_batch_preflight_progress(
+                    &window,
+                    &ipa_path,
+                    if report.ready { "ready" } else { "blocked" },
+                    Some(report.ready),
+                    None,
+                );
+                items.push(BatchIpaPreflightItem {
+                    input_path: ipa_path,
+                    report: Some(report),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let message = format!("Preflight failed: {error:?}");
+                emit_batch_preflight_progress(
+                    &window,
+                    &ipa_path,
+                    "failed",
+                    Some(false),
+                    Some(message.clone()),
+                );
+                items.push(BatchIpaPreflightItem {
+                    input_path: ipa_path,
+                    report: None,
+                    error: Some(message),
+                });
+            }
+        }
+    }
+
+    if let Some(available) = available_app_ids.filter(|available| *available >= 0) {
+        let mut remaining = available as usize;
+        let mut planned_registrations = HashSet::<String>::new();
+
+        for item in &mut items {
+            let input_path = item.input_path.clone();
+            let mut capacity_blocked = false;
+
+            if let Some(report) = item.report.as_mut()
+                && report.ready
+            {
+                let needed = report
+                    .inspection
+                    .requires_registration_bundle_ids
+                    .iter()
+                    .filter(|identifier| !planned_registrations.contains(*identifier))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                if needed.len() > remaining {
+                    report.checks.push(AutoPreflightCheck {
+                        code: "batch.app_ids.capacity".into(),
+                        severity: AutoPreflightSeverity::Error,
+                        passed: false,
+                        message: format!(
+                            "Batch App ID quota exhausted before this IPA: {} slot(s) remain, {} additional App ID(s) are required.",
+                            remaining,
+                            needed.len()
+                        ),
+                    });
+                    report.ready = false;
+                    capacity_blocked = true;
+                } else {
+                    remaining -= needed.len();
+                    planned_registrations.extend(needed);
+                }
+            }
+
+            if capacity_blocked {
+                emit_batch_preflight_progress(
+                    &window,
+                    &input_path,
+                    "blocked",
+                    Some(false),
+                    Some("Batch App ID quota is insufficient for this queue position.".into()),
+                );
+            }
+        }
+    }
+
+    let ready = items
+        .iter()
+        .filter(|item| item.report.as_ref().is_some_and(|report| report.ready))
+        .count();
+    let failed = items.iter().filter(|item| item.report.is_none()).count();
+    let blocked = items.len().saturating_sub(ready + failed);
+
+    Ok(BatchIpaPreflightReport {
+        total: items.len(),
+        ready,
+        blocked,
+        failed,
+        items,
     })
 }
