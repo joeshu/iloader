@@ -56,3 +56,12 @@ jobs:
 
       - name: Build
         run: npm run tauri build
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: iloader-windows
+          path: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
+          if-no-files-found: error
