@@ -34,6 +34,7 @@ pub struct IpaProfileMatch {
 pub struct IpaBundleInspection {
     pub name: String,
     pub bundle_identifier: String,
+    pub signing_bundle_identifier: String,
     pub version: Option<String>,
     pub build: Option<String>,
     pub minimum_os_version: Option<String>,
@@ -48,6 +49,8 @@ pub struct IpaInspectionResult {
     pub extensions: Vec<IpaBundleInspection>,
     pub all_bundle_ids_matched: bool,
     pub unmatched_bundle_ids: Vec<String>,
+    pub requires_registration_bundle_ids: Vec<String>,
+    pub extension_bundle_ids_valid: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,9 +116,10 @@ async fn build_inspection(
     app_ids: &[AppId],
 ) -> Result<IpaInspectionResult, AppError> {
     let main_bundle_id = application.main_bundle_id()?;
+    let signing_main_bundle_id = format!("{}.{}", main_bundle_id, team.team_id);
     let main_app_id = app_ids
         .iter()
-        .find(|app_id| app_id.identifier == main_bundle_id)
+        .find(|app_id| app_id.identifier == signing_main_bundle_id)
         .cloned();
     let main_match = if let Some(app_id) = main_app_id.as_ref() {
         Some(profile_match(dev_session, team, app_id).await?)
@@ -126,6 +130,7 @@ async fn build_inspection(
     let main = IpaBundleInspection {
         name: application.main_app_name()?,
         bundle_identifier: main_bundle_id.clone(),
+        signing_bundle_identifier: signing_main_bundle_id.clone(),
         version: plist_string(&application.bundle, "CFBundleShortVersionString"),
         build: plist_string(&application.bundle, "CFBundleVersion"),
         minimum_os_version: plist_string(&application.bundle, "MinimumOSVersion"),
@@ -133,11 +138,25 @@ async fn build_inspection(
     };
 
     let mut extensions = Vec::new();
+    let mut extension_bundle_ids_valid = true;
     for extension in application.bundle.app_extensions() {
         let bundle_identifier = extension.bundle_identifier().unwrap_or("").to_string();
+        let signing_bundle_identifier = if bundle_identifier.starts_with(&main_bundle_id)
+            && bundle_identifier.len() > main_bundle_id.len()
+        {
+            format!(
+                "{}{}",
+                signing_main_bundle_id,
+                &bundle_identifier[main_bundle_id.len()..]
+            )
+        } else {
+            extension_bundle_ids_valid = false;
+            bundle_identifier.clone()
+        };
+
         let matched_app_id = app_ids
             .iter()
-            .find(|app_id| app_id.identifier == bundle_identifier)
+            .find(|app_id| app_id.identifier == signing_bundle_identifier)
             .cloned();
         let app_id_match = if let Some(app_id) = matched_app_id.as_ref() {
             Some(profile_match(dev_session, team, app_id).await?)
@@ -148,6 +167,7 @@ async fn build_inspection(
         extensions.push(IpaBundleInspection {
             name: extension.bundle_name().unwrap_or("Extension").to_string(),
             bundle_identifier,
+            signing_bundle_identifier,
             version: plist_string(extension, "CFBundleShortVersionString"),
             build: plist_string(extension, "CFBundleVersion"),
             minimum_os_version: plist_string(extension, "MinimumOSVersion"),
@@ -157,11 +177,11 @@ async fn build_inspection(
 
     let mut unmatched_bundle_ids = Vec::new();
     if main.app_id_match.is_none() {
-        unmatched_bundle_ids.push(main.bundle_identifier.clone());
+        unmatched_bundle_ids.push(main.signing_bundle_identifier.clone());
     }
     for extension in &extensions {
         if extension.app_id_match.is_none() {
-            unmatched_bundle_ids.push(extension.bundle_identifier.clone());
+            unmatched_bundle_ids.push(extension.signing_bundle_identifier.clone());
         }
     }
 
@@ -170,7 +190,9 @@ async fn build_inspection(
         main,
         extensions,
         all_bundle_ids_matched: unmatched_bundle_ids.is_empty(),
+        requires_registration_bundle_ids: unmatched_bundle_ids.clone(),
         unmatched_bundle_ids,
+        extension_bundle_ids_valid,
     })
 }
 
@@ -203,7 +225,9 @@ pub async fn preflight_ipa(
     let dev_session = sideloader.get_mut().get_dev_session();
 
     let certificates = dev_session.list_all_development_certs(&team, None).await?;
-    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
+    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
+    let available_app_ids = app_ids_response.available_quantity;
+    let app_ids = app_ids_response.app_ids;
     let devices = dev_session.list_devices(&team, None).await?;
     let inspection = build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await?;
 
@@ -220,18 +244,68 @@ pub async fn preflight_ipa(
     });
 
     checks.push(AutoPreflightCheck {
-        code: "bundle_ids.matched".into(),
+        code: "extensions.bundle_id_relationship".into(),
         severity: AutoPreflightSeverity::Error,
-        passed: inspection.all_bundle_ids_matched,
-        message: if inspection.all_bundle_ids_matched {
-            "Main app and all extensions have matching App IDs.".into()
+        passed: inspection.extension_bundle_ids_valid,
+        message: if inspection.extension_bundle_ids_valid {
+            "All extension bundle identifiers are derived from the main bundle identifier.".into()
         } else {
-            format!(
-                "Missing matching App IDs for: {}.",
-                inspection.unmatched_bundle_ids.join(", ")
-            )
+            "At least one extension bundle identifier is not derived from the main bundle identifier and the current signing engine cannot rewrite it safely.".into()
         },
     });
+
+    let registrations_needed = inspection.requires_registration_bundle_ids.len();
+    if registrations_needed == 0 {
+        checks.push(AutoPreflightCheck {
+            code: "app_ids.ready".into(),
+            severity: AutoPreflightSeverity::Info,
+            passed: true,
+            message: "All signing App IDs already exist on the developer team.".into(),
+        });
+    } else {
+        checks.push(AutoPreflightCheck {
+            code: "app_ids.registration_required".into(),
+            severity: AutoPreflightSeverity::Warning,
+            passed: true,
+            message: format!(
+                "{} App ID(s) will be registered automatically during signing: {}.",
+                registrations_needed,
+                inspection.requires_registration_bundle_ids.join(", ")
+            ),
+        });
+
+        if let Some(available) = available_app_ids {
+            let enough = available < 0 || registrations_needed <= available as usize;
+            checks.push(AutoPreflightCheck {
+                code: "app_ids.capacity".into(),
+                severity: AutoPreflightSeverity::Error,
+                passed: enough,
+                message: if available < 0 {
+                    format!(
+                        "Apple reported an invalid negative App ID quota ({}); signing will still attempt registration.",
+                        available
+                    )
+                } else if enough {
+                    format!(
+                        "{} App ID slot(s) are available; {} are required.",
+                        available, registrations_needed
+                    )
+                } else {
+                    format!(
+                        "Not enough App ID slots: {} available, {} required.",
+                        available, registrations_needed
+                    )
+                },
+            });
+        } else {
+            checks.push(AutoPreflightCheck {
+                code: "app_ids.capacity_unknown".into(),
+                severity: AutoPreflightSeverity::Warning,
+                passed: true,
+                message: "Apple did not report an App ID quota; registration capacity will be verified during signing.".into(),
+            });
+        }
+    }
 
     let mut matched_bundles = vec![&inspection.main];
     matched_bundles.extend(inspection.extensions.iter());
@@ -242,17 +316,30 @@ pub async fn preflight_ipa(
                 .as_deref()
                 .is_some_and(|status| status.eq_ignore_ascii_case("active"));
             checks.push(AutoPreflightCheck {
-                code: format!("profile.active.{}", bundle.bundle_identifier),
+                code: format!("profile.active.{}", bundle.signing_bundle_identifier),
                 severity: AutoPreflightSeverity::Error,
                 passed: active,
                 message: if active {
-                    format!("Provisioning profile for {} is active.", bundle.bundle_identifier)
+                    format!(
+                        "Provisioning profile for {} is active.",
+                        bundle.signing_bundle_identifier
+                    )
                 } else {
                     format!(
                         "Provisioning profile for {} is not active.",
-                        bundle.bundle_identifier
+                        bundle.signing_bundle_identifier
                     )
                 },
+            });
+        } else {
+            checks.push(AutoPreflightCheck {
+                code: format!("profile.pending.{}", bundle.signing_bundle_identifier),
+                severity: AutoPreflightSeverity::Info,
+                passed: true,
+                message: format!(
+                    "Provisioning profile for {} will be created after its App ID is registered.",
+                    bundle.signing_bundle_identifier
+                ),
             });
         }
     }
@@ -261,12 +348,15 @@ pub async fn preflight_ipa(
         let registered = devices.iter().any(|device| device.device_number == udid);
         checks.push(AutoPreflightCheck {
             code: "device.registered".into(),
-            severity: AutoPreflightSeverity::Error,
-            passed: registered,
+            severity: AutoPreflightSeverity::Warning,
+            passed: true,
             message: if registered {
-                format!("Device {} is registered on the team.", udid)
+                format!("Device {} is already registered on the team.", udid)
             } else {
-                format!("Device {} is not registered on the team.", udid)
+                format!(
+                    "Device {} is not registered yet; installation flow can register it automatically.",
+                    udid
+                )
             },
         });
     } else {
