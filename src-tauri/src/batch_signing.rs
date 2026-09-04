@@ -223,10 +223,7 @@ pub async fn batch_sign_ipas(
         let input_path = PathBuf::from(&input);
         let metadata = Application::new(input_path.clone());
         let (app_name, bundle_identifier) = match metadata {
-            Ok(app) => (
-                app.main_app_name().ok().map(ToString::to_string),
-                app.main_bundle_id().ok(),
-            ),
+            Ok(app) => (app.main_app_name().ok(), app.main_bundle_id().ok()),
             Err(error) => {
                 let message = format!("IPA preflight failed: {error:?}");
                 emit_progress(
