@@ -21,6 +21,7 @@ import { Certificates } from "./pages/Certificates";
 import { AppIds } from "./pages/AppIds";
 import { Settings } from "./pages/Settings";
 import { Pairing } from "./pages/Pairing";
+import { SigningCenter } from "./pages/SigningCenter";
 import { getVersion } from "@tauri-apps/api/app";
 import { checkForUpdates } from "./update";
 import logo from "./iloader.svg";
@@ -37,7 +38,7 @@ function App() {
   const [loggedInAs, setLoggedInAs] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
   const [openModal, setOpenModal] = useState<
-    null | "certificates" | "appids" | "pairing"
+    null | "certificates" | "appids" | "pairing" | "signing"
   >(null);
   const [version, setVersion] = useState<string>("");
 
@@ -168,6 +169,10 @@ function App() {
         event.preventDefault();
         if (!ensuredLoggedIn()) return;
         setOpenModal("appids");
+      } else if (event.shiftKey && key === "s") {
+        event.preventDefault();
+        if (!ensuredLoggedIn()) return;
+        setOpenModal("signing");
       } else if (!event.shiftKey && key === "r") {
         event.preventDefault();
         refreshDevicesRef.current?.();
@@ -214,7 +219,6 @@ function App() {
           <section className="workspace-section">
             <div className="section-header">
               <p className="section-label">{t("app.section_account")}</p>
-              {/* here to ensure spacing and stuff is correct */}
               <span className="section-hint placeholder" aria-hidden="true">
                 Placeholder
               </span>
@@ -271,6 +275,18 @@ function App() {
                 {t("app.app_ids")}{" "}
                 <span aria-hidden="true">
                   {shortcutLabel("⌘⇧A", "Ctrl+Shift+A")}
+                </span>
+              </button>
+              <button
+                className="workspace-list-item"
+                onClick={() => {
+                  if (!ensuredLoggedIn()) return;
+                  setOpenModal("signing");
+                }}
+              >
+                Signing Center{" "}
+                <span aria-hidden="true">
+                  {shortcutLabel("⌘⇧S", "Ctrl+Shift+S")}
                 </span>
               </button>
             </div>
@@ -415,6 +431,9 @@ function App() {
       </Modal>
       <Modal isOpen={openModal === "pairing"} close={() => setOpenModal(null)}>
         <Pairing />
+      </Modal>
+      <Modal isOpen={openModal === "signing"} close={() => setOpenModal(null)}>
+        <SigningCenter deviceUdid={selectedDevice?.uuid ?? null} />
       </Modal>
     </main>
   );
