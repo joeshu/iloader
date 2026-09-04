@@ -18,18 +18,11 @@ jobs:
     env:
       HAVE_SIGNING_SECRETS: ${{ secrets.DEV_ID_P12_BASE64 != '' && secrets.DEV_ID_P12_PASSWORD != '' && secrets.DEV_IDENTITY_NAME != '' }}
       HAVE_NOTARIZE_SECRETS: ${{ secrets.NOTARIZE_APPLE_ID != '' && secrets.NOTARIZE_APP_SPECIFIC_PASS != '' && secrets.NOTARIZE_TEAM_ID != '' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: "windows-latest"
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Cache Rust and bun dependencies
+      - name: Cache Rust, Bun and frontend dependencies
         uses: actions/cache@v5
         with:
           path: |
@@ -37,12 +30,16 @@ jobs:
             ~/.cargo/git
             src-tauri/target
             node_modules
-          key: ${{ matrix.platform }}-iloader-${{ hashFiles('**/Cargo.lock', 'package-lock.json') }}
+            ~/.bun/install/cache
+          key: windows-iloader-${{ hashFiles('**/Cargo.lock', 'package-lock.json', 'bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-iloader-
+            Windows-iloader-
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Add MSVC to PATH
         shell: pwsh
@@ -53,4 +50,4 @@ jobs:
         run: npm install
 
       - name: Build
-        run: npm run tauri build -- ${{ matrix.args }}
+        run: npm run tauri build
