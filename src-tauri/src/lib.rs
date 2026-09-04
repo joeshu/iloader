@@ -11,6 +11,7 @@ mod secure_storage;
 mod error;
 mod logging;
 mod operation;
+mod signing_center;
 
 use crate::{
     account::{
@@ -27,6 +28,7 @@ use crate::{
     },
     secure_storage::{force_disable_keyring, keyring_available},
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
+    signing_center::{get_signing_center_snapshot, preflight_signing},
 };
 use tauri::Manager;
 use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -119,6 +121,8 @@ pub fn run() {
             list_app_ids,
             delete_app_id,
             export_signing_bundle,
+            get_signing_center_snapshot,
+            preflight_signing,
             installed_pairing_apps,
             place_pairing_cmd,
             reset_anisette_state,
