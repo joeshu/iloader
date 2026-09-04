@@ -6,7 +6,7 @@ use std::{
 
 use isideload::sideload::application::Application;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State, Window};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
@@ -40,6 +40,41 @@ pub struct BatchSigningReport {
     pub failed: usize,
     pub output_directory: String,
     pub items: Vec<BatchSigningItemResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSigningProgress {
+    pub input_path: String,
+    pub stage: String,
+    pub app_name: Option<String>,
+    pub bundle_identifier: Option<String>,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+}
+
+fn emit_progress(
+    window: &Window,
+    input_path: &str,
+    stage: &str,
+    app_name: Option<String>,
+    bundle_identifier: Option<String>,
+    output_path: Option<String>,
+    error: Option<String>,
+) {
+    if let Err(error) = window.emit(
+        "batch_signing_progress",
+        BatchSigningProgress {
+            input_path: input_path.to_string(),
+            stage: stage.to_string(),
+            app_name,
+            bundle_identifier,
+            output_path,
+            error,
+        },
+    ) {
+        tracing::warn!("Failed to emit batch signing progress event: {}", error);
+    }
 }
 
 fn zip_error(context: &str, err: impl std::fmt::Display) -> AppError {
@@ -135,14 +170,20 @@ fn package_signed_app(signed_app_path: &Path, output_path: &Path) -> Result<(), 
         .to_string();
 
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| AppError::Filesystem("Failed to create output directory".into(), e.to_string()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            AppError::Filesystem("Failed to create output directory".into(), e.to_string())
+        })?;
     }
 
-    let file = File::create(output_path)
-        .map_err(|e| AppError::Filesystem("Failed to create signed IPA".into(), e.to_string()))?;
+    let file = File::create(output_path).map_err(|e| {
+        AppError::Filesystem("Failed to create signed IPA".into(), e.to_string())
+    })?;
     let mut writer = ZipWriter::new(file);
-    add_directory_to_zip(&mut writer, signed_app_path, &format!("Payload/{}", app_name))?;
+    add_directory_to_zip(
+        &mut writer,
+        signed_app_path,
+        &format!("Payload/{}", app_name),
+    )?;
     writer
         .finish()
         .map_err(|e| zip_error("Failed to finalize signed IPA", e))?;
@@ -160,18 +201,25 @@ fn default_output_name(input: &Path) -> String {
 
 #[tauri::command]
 pub async fn batch_sign_ipas(
+    window: Window,
     sideloader_state: State<'_, SideloaderMutex>,
     ipa_paths: Vec<String>,
     output_directory: String,
 ) -> Result<BatchSigningReport, AppError> {
     let output_dir = PathBuf::from(&output_directory);
-    fs::create_dir_all(&output_dir)
-        .map_err(|e| AppError::Filesystem("Failed to create batch output directory".into(), e.to_string()))?;
+    fs::create_dir_all(&output_dir).map_err(|e| {
+        AppError::Filesystem(
+            "Failed to create batch output directory".into(),
+            e.to_string(),
+        )
+    })?;
 
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
     let mut items = Vec::with_capacity(ipa_paths.len());
 
     for input in ipa_paths {
+        emit_progress(&window, &input, "inspecting", None, None, None, None);
+
         let input_path = PathBuf::from(&input);
         let metadata = Application::new(input_path.clone());
         let (app_name, bundle_identifier) = match metadata {
@@ -180,17 +228,37 @@ pub async fn batch_sign_ipas(
                 app.main_bundle_id().ok(),
             ),
             Err(error) => {
+                let message = format!("IPA preflight failed: {error:?}");
+                emit_progress(
+                    &window,
+                    &input,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    Some(message.clone()),
+                );
                 items.push(BatchSigningItemResult {
                     input_path: input,
                     app_name: None,
                     bundle_identifier: None,
                     status: BatchSigningStatus::Failed,
                     output_path: None,
-                    error: Some(format!("IPA preflight failed: {error:?}")),
+                    error: Some(message),
                 });
                 continue;
             }
         };
+
+        emit_progress(
+            &window,
+            &input,
+            "signing",
+            app_name.clone(),
+            bundle_identifier.clone(),
+            None,
+            None,
+        );
 
         let signing = sideloader
             .get_mut()
@@ -205,23 +273,57 @@ pub async fn batch_sign_ipas(
         match signing {
             Ok((signed_app_path, _special)) => {
                 let output_path = output_dir.join(default_output_name(&input_path));
+                emit_progress(
+                    &window,
+                    &input,
+                    "packaging",
+                    app_name.clone(),
+                    bundle_identifier.clone(),
+                    Some(output_path.display().to_string()),
+                    None,
+                );
+
                 match package_signed_app(&signed_app_path, &output_path) {
-                    Ok(()) => items.push(BatchSigningItemResult {
-                        input_path: input,
-                        app_name,
-                        bundle_identifier,
-                        status: BatchSigningStatus::Signed,
-                        output_path: Some(output_path.display().to_string()),
-                        error: None,
-                    }),
-                    Err(error) => items.push(BatchSigningItemResult {
-                        input_path: input,
-                        app_name,
-                        bundle_identifier,
-                        status: BatchSigningStatus::Failed,
-                        output_path: None,
-                        error: Some(format!("Packaging signed IPA failed: {error}")),
-                    }),
+                    Ok(()) => {
+                        let output_path_string = output_path.display().to_string();
+                        emit_progress(
+                            &window,
+                            &input,
+                            "signed",
+                            app_name.clone(),
+                            bundle_identifier.clone(),
+                            Some(output_path_string.clone()),
+                            None,
+                        );
+                        items.push(BatchSigningItemResult {
+                            input_path: input,
+                            app_name,
+                            bundle_identifier,
+                            status: BatchSigningStatus::Signed,
+                            output_path: Some(output_path_string),
+                            error: None,
+                        });
+                    }
+                    Err(error) => {
+                        let message = format!("Packaging signed IPA failed: {error}");
+                        emit_progress(
+                            &window,
+                            &input,
+                            "failed",
+                            app_name.clone(),
+                            bundle_identifier.clone(),
+                            None,
+                            Some(message.clone()),
+                        );
+                        items.push(BatchSigningItemResult {
+                            input_path: input,
+                            app_name,
+                            bundle_identifier,
+                            status: BatchSigningStatus::Failed,
+                            output_path: None,
+                            error: Some(message),
+                        });
+                    }
                 }
 
                 if let Err(error) = fs::remove_dir_all(&signed_app_path) {
@@ -232,14 +334,26 @@ pub async fn batch_sign_ipas(
                     );
                 }
             }
-            Err(error) => items.push(BatchSigningItemResult {
-                input_path: input,
-                app_name,
-                bundle_identifier,
-                status: BatchSigningStatus::Failed,
-                output_path: None,
-                error: Some(format!("Signing failed: {error:?}")),
-            }),
+            Err(error) => {
+                let message = format!("Signing failed: {error:?}");
+                emit_progress(
+                    &window,
+                    &input,
+                    "failed",
+                    app_name.clone(),
+                    bundle_identifier.clone(),
+                    None,
+                    Some(message.clone()),
+                );
+                items.push(BatchSigningItemResult {
+                    input_path: input,
+                    app_name,
+                    bundle_identifier,
+                    status: BatchSigningStatus::Failed,
+                    output_path: None,
+                    error: Some(message),
+                });
+            }
         }
     }
 
