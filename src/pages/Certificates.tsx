@@ -4,6 +4,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useError } from "../ErrorContext";
+import { AppError } from "../errors";
 import { useTranslation } from "react-i18next";
 
 export type Certificate = {
@@ -160,7 +161,7 @@ export const Certificates = () => {
         `Exported ${result.profiles.length} provisioning profile(s) to ${result.archivePath}. P12 password: ${result.p12Password}`,
       );
     } catch (e) {
-      toast.error(err("Failed to export complete signing bundle", e));
+      toast.error(err("Failed to export complete signing bundle", e as AppError));
     } finally {
       setExportingCompleteBundle(false);
     }
