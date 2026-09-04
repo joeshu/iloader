@@ -80,6 +80,27 @@ type AutoIpaPreflightReport = {
   checks: AutoPreflightCheck[];
 };
 
+type BatchIpaPreflightItem = {
+  inputPath: string;
+  report?: AutoIpaPreflightReport | null;
+  error?: string | null;
+};
+
+type BatchIpaPreflightReport = {
+  total: number;
+  ready: number;
+  blocked: number;
+  failed: number;
+  items: BatchIpaPreflightItem[];
+};
+
+type BatchPreflightProgress = {
+  inputPath: string;
+  stage: "scanning" | "ready" | "blocked" | "failed";
+  ready?: boolean | null;
+  error?: string | null;
+};
+
 type BatchSigningItemResult = {
   inputPath: string;
   appName?: string | null;
@@ -165,33 +186,56 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
 
   useEffect(() => {
     let disposed = false;
-    let cleanup: (() => void) | undefined;
+    const cleanups: Array<() => void> = [];
 
-    listen<BatchSigningProgress>("batch_signing_progress", (event) => {
-      const progress = event.payload;
-      setQueue((current) =>
-        current.map((item) =>
-          item.path === progress.inputPath
-            ? {
-                ...item,
-                stage: progress.stage,
-                outputPath: progress.outputPath || item.outputPath,
-                error: progress.error || item.error,
-              }
-            : item,
-        ),
-      );
-    }).then((unlisten) => {
+    const preflightListener = listen<BatchPreflightProgress>(
+      "batch_preflight_progress",
+      (event) => {
+        const progress = event.payload;
+        setQueue((current) =>
+          current.map((item) =>
+            item.path === progress.inputPath
+              ? {
+                  ...item,
+                  stage: progress.stage,
+                  error: progress.error || item.error,
+                }
+              : item,
+          ),
+        );
+      },
+    );
+
+    const signingListener = listen<BatchSigningProgress>(
+      "batch_signing_progress",
+      (event) => {
+        const progress = event.payload;
+        setQueue((current) =>
+          current.map((item) =>
+            item.path === progress.inputPath
+              ? {
+                  ...item,
+                  stage: progress.stage,
+                  outputPath: progress.outputPath || item.outputPath,
+                  error: progress.error || item.error,
+                }
+              : item,
+          ),
+        );
+      },
+    );
+
+    Promise.all([preflightListener, signingListener]).then((unlisteners) => {
       if (disposed) {
-        unlisten();
+        unlisteners.forEach((unlisten) => unlisten());
       } else {
-        cleanup = unlisten;
+        cleanups.push(...unlisteners);
       }
     });
 
     return () => {
       disposed = true;
-      cleanup?.();
+      cleanups.forEach((cleanup) => cleanup());
     };
   }, []);
 
@@ -228,44 +272,53 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       return;
     }
 
+    const ipaPaths = queue.map((item) => item.path);
+    setQueue((current) =>
+      current.map((item) => ({
+        ...item,
+        stage: "pending",
+        report: undefined,
+        error: undefined,
+      })),
+    );
     setScanning(true);
-    try {
-      for (const item of queue) {
-        setQueue((current) =>
-          current.map((candidate) =>
-            candidate.path === item.path
-              ? { ...candidate, stage: "scanning", report: undefined, error: undefined }
-              : candidate,
-          ),
-        );
 
-        try {
-          const report = await invoke<AutoIpaPreflightReport>("preflight_ipa", {
-            ipaPath: item.path,
-            deviceUdid: deviceUdid || null,
-          });
-          setQueue((current) =>
-            current.map((candidate) =>
-              candidate.path === item.path
-                ? {
-                    ...candidate,
-                    stage: report.ready ? "ready" : "blocked",
-                    report,
-                    error: undefined,
-                  }
-                : candidate,
-            ),
-          );
-        } catch (error) {
-          setQueue((current) =>
-            current.map((candidate) =>
-              candidate.path === item.path
-                ? { ...candidate, stage: "failed", error: String(error) }
-                : candidate,
-            ),
-          );
-        }
+    try {
+      const report = await invoke<BatchIpaPreflightReport>("preflight_ipas", {
+        ipaPaths,
+        deviceUdid: deviceUdid || null,
+      });
+
+      setQueue((current) =>
+        current.map((item) => {
+          const result = report.items.find((candidate) => candidate.inputPath === item.path);
+          if (!result) return item;
+          if (!result.report) {
+            return {
+              ...item,
+              stage: "failed",
+              report: undefined,
+              error: result.error || "Preflight failed",
+            };
+          }
+          return {
+            ...item,
+            stage: result.report.ready ? "ready" : "blocked",
+            report: result.report,
+            error: result.error || undefined,
+          };
+        }),
+      );
+
+      if (report.blocked === 0 && report.failed === 0) {
+        toast.success(`${report.ready} IPA(s) are ready to sign.`);
+      } else {
+        toast.warning(
+          `${report.ready} ready, ${report.blocked} blocked, ${report.failed} failed inspection.`,
+        );
       }
+    } catch (error) {
+      toast.error(`Batch preflight failed: ${String(error)}`);
     } finally {
       setScanning(false);
     }
@@ -311,12 +364,13 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       } else {
         toast.warning(`Signed ${report.signed}; ${report.failed} failed.`);
       }
+      loadSnapshot();
     } catch (error) {
       toast.error(`Batch signing failed: ${String(error)}`);
     } finally {
       setSigning(false);
     }
-  }, [readyPaths, outputDirectory]);
+  }, [readyPaths, outputDirectory, loadSnapshot]);
 
   const removeItem = useCallback((path: string) => {
     setQueue((current) => current.filter((item) => item.path !== path));
@@ -367,12 +421,16 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <div className="signing-asset-card">
           <span>Devices</span>
           <strong>{snapshot?.devices.length ?? "—"}</strong>
-          <small>{deviceUdid ? "Current device linked to preflight" : "No target device selected"}</small>
+          <small>
+            {deviceUdid ? "Current device linked to preflight" : "No target device selected"}
+          </small>
         </div>
       </div>
 
       <div className="signing-toolbar">
-        <button onClick={selectIpas} disabled={scanning || signing}>Select IPAs</button>
+        <button onClick={selectIpas} disabled={scanning || signing}>
+          Select IPAs
+        </button>
         <button onClick={scanQueue} disabled={queue.length === 0 || scanning || signing}>
           {scanning ? "Scanning…" : "Scan & preflight"}
         </button>
@@ -403,7 +461,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
 
       {queue.length === 0 ? (
         <div className="signing-empty">
-          Select multiple IPA files to build a signing queue. Each IPA is isolated so inspection or signing failures do not stop the remaining batch.
+          Select multiple IPA files to build a signing queue. Asset lists are fetched once for the batch, then each IPA is isolated so inspection or signing failures do not stop the remaining queue.
         </div>
       ) : (
         <div className="signing-queue">
@@ -431,7 +489,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                     <span className={`signing-status status-${item.stage}`}>
                       {stageLabel[item.stage]}
                     </span>
-                    {!signing && (
+                    {!signing && !scanning && (
                       <button className="signing-remove" onClick={() => removeItem(item.path)}>
                         Remove
                       </button>
@@ -449,7 +507,8 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
 
                 {(item.report?.inspection.requiresRegistrationBundleIds.length || 0) > 0 && (
                   <div className="signing-note">
-                    App IDs to register automatically: {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}
+                    App IDs to register automatically:{" "}
+                    {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}
                   </div>
                 )}
 
@@ -472,7 +531,9 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                 {item.outputPath && (
                   <div className="signing-result-path">Signed IPA: {item.outputPath}</div>
                 )}
-                {item.error && <div className="signing-checks signing-checks-error">{item.error}</div>}
+                {item.error && (
+                  <div className="signing-checks signing-checks-error">{item.error}</div>
+                )}
               </article>
             );
           })}
