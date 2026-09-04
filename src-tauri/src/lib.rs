@@ -13,6 +13,7 @@ mod error;
 mod ipa_inspection;
 mod logging;
 mod operation;
+mod signing_bundle;
 mod signing_center;
 
 use crate::{
@@ -32,6 +33,7 @@ use crate::{
     },
     secure_storage::{force_disable_keyring, keyring_available},
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
+    signing_bundle::export_ipa_signing_bundle,
     signing_center::{get_signing_center_snapshot, preflight_signing},
 };
 use tauri::Manager;
@@ -125,6 +127,7 @@ pub fn run() {
             list_app_ids,
             delete_app_id,
             export_signing_bundle,
+            export_ipa_signing_bundle,
             get_signing_center_snapshot,
             preflight_signing,
             inspect_ipa_and_match_profiles,
