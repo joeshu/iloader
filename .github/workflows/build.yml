@@ -15,9 +15,6 @@ jobs:
   build:
     permissions:
       contents: write
-    env:
-      HAVE_SIGNING_SECRETS: ${{ secrets.DEV_ID_P12_BASE64 != '' && secrets.DEV_ID_P12_PASSWORD != '' && secrets.DEV_IDENTITY_NAME != '' }}
-      HAVE_NOTARIZE_SECRETS: ${{ secrets.NOTARIZE_APPLE_ID != '' && secrets.NOTARIZE_APP_SPECIFIC_PASS != '' && secrets.NOTARIZE_TEAM_ID != '' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -48,6 +45,14 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm install
+
+      - name: Disable updater artifacts for CI validation
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
 
       - name: Build
         run: npm run tauri build
