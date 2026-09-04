@@ -25,7 +25,7 @@ use crate::{
     device::{
         DeviceInfoMutex, PairingCancelToken, cancel_pairing, list_devices, set_selected_device,
     },
-    ipa_inspection::{inspect_ipa_and_match_profiles, preflight_ipa},
+    ipa_inspection::{inspect_ipa_and_match_profiles, preflight_ipa, preflight_ipas},
     pairing::{
         delete_stored_rppairing, export_pairing_cmd, has_stored_rppairing, installed_pairing_apps,
         place_pairing_cmd,
@@ -129,6 +129,7 @@ pub fn run() {
             preflight_signing,
             inspect_ipa_and_match_profiles,
             preflight_ipa,
+            preflight_ipas,
             batch_sign_ipas,
             installed_pairing_apps,
             place_pairing_cmd,
