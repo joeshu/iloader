@@ -58,6 +58,40 @@ type IpaBundleInspection = {
   appIdMatch?: IpaProfileMatch | null;
 };
 
+type EntitlementCompatibilityItem = {
+  key: string;
+  status:
+    | "preserved"
+    | "rewritten"
+    | "added"
+    | "unsupported"
+    | "pendingRegistration"
+    | "sourceUnavailable";
+  severity: "info" | "warning" | "error";
+  sourceValue?: string | null;
+  targetValue?: string | null;
+  message: string;
+};
+
+type BundleEntitlementCompatibility = {
+  role: string;
+  name: string;
+  bundleIdentifier: string;
+  signingBundleIdentifier: string;
+  sourceProfileAvailable: boolean;
+  targetProfileAvailable: boolean;
+  blocking: boolean;
+  items: EntitlementCompatibilityItem[];
+};
+
+type EntitlementCompatibilityReport = {
+  ready: boolean;
+  teamId: string;
+  bundles: BundleEntitlementCompatibility[];
+  blockingCount: number;
+  warningCount: number;
+};
+
 type AutoPreflightCheck = {
   code: string;
   severity: "info" | "warning" | "error";
@@ -77,6 +111,7 @@ type AutoIpaPreflightReport = {
     requiresRegistrationBundleIds: string[];
     extensionBundleIdsValid: boolean;
   };
+  entitlements: EntitlementCompatibilityReport;
   checks: AutoPreflightCheck[];
 };
 
@@ -101,12 +136,23 @@ type BatchPreflightProgress = {
   error?: string | null;
 };
 
+type SignedIpaValidation = {
+  valid: boolean;
+  payloadApp?: string | null;
+  hasInfoPlist: boolean;
+  hasCodeSignature: boolean;
+  hasProvisioningProfile: boolean;
+  extensionCount: number;
+  extensionProfiles: number;
+};
+
 type BatchSigningItemResult = {
   inputPath: string;
   appName?: string | null;
   bundleIdentifier?: string | null;
   status: "signed" | "failed";
   outputPath?: string | null;
+  validation?: SignedIpaValidation | null;
   error?: string | null;
 };
 
@@ -120,7 +166,7 @@ type BatchSigningReport = {
 
 type BatchSigningProgress = {
   inputPath: string;
-  stage: "inspecting" | "signing" | "packaging" | "signed" | "failed";
+  stage: "inspecting" | "signing" | "packaging" | "validating" | "signed" | "failed";
   appName?: string | null;
   bundleIdentifier?: string | null;
   outputPath?: string | null;
@@ -154,6 +200,7 @@ type QueueStage =
   | "inspecting"
   | "signing"
   | "packaging"
+  | "validating"
   | "signed"
   | "failed";
 
@@ -163,6 +210,7 @@ type QueueItem = {
   report?: AutoIpaPreflightReport;
   error?: string;
   outputPath?: string;
+  validation?: SignedIpaValidation;
 };
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
@@ -175,6 +223,7 @@ const stageLabel: Record<QueueStage, string> = {
   inspecting: "Inspecting",
   signing: "Signing",
   packaging: "Packaging",
+  validating: "Validating",
   signed: "Signed",
   failed: "Failed",
 };
@@ -215,11 +264,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         setQueue((current) =>
           current.map((item) =>
             item.path === progress.inputPath
-              ? {
-                  ...item,
-                  stage: progress.stage,
-                  error: progress.error || item.error,
-                }
+              ? { ...item, stage: progress.stage, error: progress.error || item.error }
               : item,
           ),
         );
@@ -246,11 +291,8 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     );
 
     Promise.all([preflightListener, signingListener]).then((unlisteners) => {
-      if (disposed) {
-        unlisteners.forEach((unlisten) => unlisten());
-      } else {
-        cleanups.push(...unlisteners);
-      }
+      if (disposed) unlisteners.forEach((unlisten) => unlisten());
+      else cleanups.push(...unlisteners);
     });
 
     return () => {
@@ -277,13 +319,8 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   }, []);
 
   const selectOutputDirectory = useCallback(async () => {
-    const selected = await openDialog({
-      directory: true,
-      multiple: false,
-    });
-    if (typeof selected === "string") {
-      setOutputDirectory(selected);
-    }
+    const selected = await openDialog({ directory: true, multiple: false });
+    if (typeof selected === "string") setOutputDirectory(selected);
   }, []);
 
   const scanQueue = useCallback(async () => {
@@ -299,6 +336,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         stage: "pending",
         report: undefined,
         error: undefined,
+        validation: undefined,
       })),
     );
     setScanning(true);
@@ -333,9 +371,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       if (report.blocked === 0 && report.failed === 0) {
         toast.success(`${report.ready} IPA(s) are ready to sign.`);
       } else {
-        toast.warning(
-          `${report.ready} ready, ${report.blocked} blocked, ${report.failed} failed inspection.`,
-        );
+        toast.warning(`${report.ready} ready, ${report.blocked} blocked, ${report.failed} failed inspection.`);
       }
     } catch (error) {
       toast.error(`Batch preflight failed: ${String(error)}`);
@@ -374,16 +410,14 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             ...item,
             stage: result.status,
             outputPath: result.outputPath || item.outputPath,
+            validation: result.validation || undefined,
             error: result.error || undefined,
           };
         }),
       );
 
-      if (report.failed === 0) {
-        toast.success(`Signed ${report.signed} IPA(s).`);
-      } else {
-        toast.warning(`Signed ${report.signed}; ${report.failed} failed.`);
-      }
+      if (report.failed === 0) toast.success(`Signed and validated ${report.signed} IPA(s).`);
+      else toast.warning(`Signed and validated ${report.signed}; ${report.failed} failed.`);
       loadSnapshot();
     } catch (error) {
       toast.error(`Batch signing failed: ${String(error)}`);
@@ -397,10 +431,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     try {
       const result = await invoke<CompleteSigningBundleExportInfo | null>(
         "export_ipa_signing_bundle",
-        {
-          ipaPath,
-          password: null,
-        },
+        { ipaPath, password: null },
       );
       if (!result) {
         toast.info("Signing bundle export canceled.");
@@ -434,7 +465,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <div>
           <h2>Signing Center</h2>
           <p className="signing-center-subtitle">
-            Inspect IPA metadata, validate signing prerequisites, match provisioning assets and sign batches without one failed IPA blocking the rest.
+            Inspect IPA metadata, entitlement compatibility and signing prerequisites, then sign and validate batches without one failed IPA blocking the rest.
           </p>
         </div>
         <button onClick={loadSnapshot} disabled={loadingSnapshot || scanning || signing}>
@@ -443,64 +474,27 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       </div>
 
       <div className="signing-asset-grid">
-        <div className="signing-asset-card">
-          <span>Team</span>
-          <strong>{snapshot?.teamId || "—"}</strong>
-          <small>{snapshot?.email || "Not loaded"}</small>
-        </div>
-        <div className="signing-asset-card">
-          <span>Certificates</span>
-          <strong>{snapshot?.certificates.length ?? "—"}</strong>
-          <small>Development identities</small>
-        </div>
-        <div className="signing-asset-card">
-          <span>App IDs</span>
-          <strong>{snapshot?.appIds.length ?? "—"}</strong>
-          <small>
-            {snapshot?.availableAppIds == null
-              ? "Quota unavailable"
-              : `${snapshot.availableAppIds} slots available`}
-          </small>
-        </div>
-        <div className="signing-asset-card">
-          <span>Devices</span>
-          <strong>{snapshot?.devices.length ?? "—"}</strong>
-          <small>
-            {deviceUdid ? "Current device linked to preflight" : "No target device selected"}
-          </small>
-        </div>
+        <div className="signing-asset-card"><span>Team</span><strong>{snapshot?.teamId || "—"}</strong><small>{snapshot?.email || "Not loaded"}</small></div>
+        <div className="signing-asset-card"><span>Certificates</span><strong>{snapshot?.certificates.length ?? "—"}</strong><small>Development identities</small></div>
+        <div className="signing-asset-card"><span>App IDs</span><strong>{snapshot?.appIds.length ?? "—"}</strong><small>{snapshot?.availableAppIds == null ? "Quota unavailable" : `${snapshot.availableAppIds} slots available`}</small></div>
+        <div className="signing-asset-card"><span>Devices</span><strong>{snapshot?.devices.length ?? "—"}</strong><small>{deviceUdid ? "Current device linked to preflight" : "No target device selected"}</small></div>
       </div>
 
       <div className="signing-toolbar">
-        <button onClick={selectIpas} disabled={scanning || signing}>
-          Select IPAs
-        </button>
-        <button onClick={scanQueue} disabled={queue.length === 0 || scanning || signing}>
-          {scanning ? "Scanning…" : "Scan & preflight"}
-        </button>
-        <button onClick={selectOutputDirectory} disabled={scanning || signing}>
-          Choose output folder
-        </button>
-        <button
-          className="signing-primary"
-          onClick={signReady}
-          disabled={readyPaths.length === 0 || scanning || signing}
-        >
+        <button onClick={selectIpas} disabled={scanning || signing}>Select IPAs</button>
+        <button onClick={scanQueue} disabled={queue.length === 0 || scanning || signing}>{scanning ? "Scanning…" : "Scan & preflight"}</button>
+        <button onClick={selectOutputDirectory} disabled={scanning || signing}>Choose output folder</button>
+        <button className="signing-primary" onClick={signReady} disabled={readyPaths.length === 0 || scanning || signing}>
           {signing ? "Signing batch…" : `Sign ready (${readyPaths.length})`}
         </button>
       </div>
 
       <div className="signing-output-path" title={outputDirectory}>
-        <span>Output</span>
-        <strong>{outputDirectory || "Choose a destination for signed IPA files"}</strong>
+        <span>Output</span><strong>{outputDirectory || "Choose a destination for signed IPA files"}</strong>
       </div>
 
       <div className="signing-summary">
-        <span>{queue.length} total</span>
-        <span>{summary.ready} ready</span>
-        <span>{summary.blocked} blocked</span>
-        <span>{summary.signed} signed</span>
-        <span>{summary.failed} failed</span>
+        <span>{queue.length} total</span><span>{summary.ready} ready</span><span>{summary.blocked} blocked</span><span>{summary.signed} signed</span><span>{summary.failed} failed</span>
       </div>
 
       {queue.length === 0 ? (
@@ -511,11 +505,13 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <div className="signing-queue">
           {queue.map((item) => {
             const main = item.report?.inspection.main;
-            const blockingChecks = item.report?.checks.filter(
-              (check) => check.severity === "error" && !check.passed,
+            const blockingChecks = item.report?.checks.filter((check) => check.severity === "error" && !check.passed);
+            const warnings = item.report?.checks.filter((check) => check.severity === "warning");
+            const entitlementBlocking = item.report?.entitlements.bundles.flatMap((bundle) =>
+              bundle.items.filter((entry) => entry.severity === "error").map((entry) => `${bundle.name}: ${entry.message}`),
             );
-            const warnings = item.report?.checks.filter(
-              (check) => check.severity === "warning",
+            const entitlementWarnings = item.report?.entitlements.bundles.flatMap((bundle) =>
+              bundle.items.filter((entry) => entry.severity === "warning").map((entry) => `${bundle.name}: ${entry.message}`),
             );
             const canExportBundle = item.report?.inspection.allBundleIdsMatched === true;
 
@@ -525,69 +521,59 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                   <div className="signing-file-meta">
                     <strong>{main?.name || fileName(item.path)}</strong>
                     <span>{main?.bundleIdentifier || item.path}</span>
-                    {main?.signingBundleIdentifier &&
-                      main.signingBundleIdentifier !== main.bundleIdentifier && (
-                        <small>Signing ID: {main.signingBundleIdentifier}</small>
-                      )}
+                    {main?.signingBundleIdentifier && main.signingBundleIdentifier !== main.bundleIdentifier && (
+                      <small>Signing ID: {main.signingBundleIdentifier}</small>
+                    )}
                   </div>
                   <div className="signing-row-actions">
-                    <span className={`signing-status status-${item.stage}`}>
-                      {stageLabel[item.stage]}
-                    </span>
+                    <span className={`signing-status status-${item.stage}`}>{stageLabel[item.stage]}</span>
                     {!signing && !scanning && canExportBundle && (
-                      <button
-                        onClick={() => exportSigningBundle(item.path)}
-                        disabled={exportingBundlePath !== null}
-                        title="Export P12, main/extension provisioning profiles, metadata and SHA-256 checksums"
-                      >
+                      <button onClick={() => exportSigningBundle(item.path)} disabled={exportingBundlePath !== null} title="Export P12, main/extension provisioning profiles, metadata and SHA-256 checksums">
                         {exportingBundlePath === item.path ? "Exporting…" : "Export bundle"}
                       </button>
                     )}
-                    {!signing && !scanning && (
-                      <button className="signing-remove" onClick={() => removeItem(item.path)}>
-                        Remove
-                      </button>
-                    )}
+                    {!signing && !scanning && <button className="signing-remove" onClick={() => removeItem(item.path)}>Remove</button>}
                   </div>
                 </div>
 
                 {main?.appIdMatch && (
                   <div className="signing-profile-line">
-                    <span>Profile</span>
-                    <strong>{main.appIdMatch.profileName || main.appIdMatch.name}</strong>
-                    <span>{main.appIdMatch.profileStatus || "Pending"}</span>
+                    <span>Profile</span><strong>{main.appIdMatch.profileName || main.appIdMatch.name}</strong><span>{main.appIdMatch.profileStatus || "Pending"}</span>
+                  </div>
+                )}
+
+                {item.report?.entitlements && (
+                  <div className="signing-profile-line">
+                    <span>Entitlements</span>
+                    <strong>{item.report.entitlements.blockingCount} blocking</strong>
+                    <span>{item.report.entitlements.warningCount} warning(s)</span>
                   </div>
                 )}
 
                 {(item.report?.inspection.requiresRegistrationBundleIds.length || 0) > 0 && (
-                  <div className="signing-note">
-                    App IDs to register automatically:{" "}
-                    {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}
-                  </div>
+                  <div className="signing-note">App IDs to register automatically: {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}</div>
                 )}
 
                 {(blockingChecks?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-error">
-                    {blockingChecks?.map((check) => (
-                      <div key={check.code}>{check.message}</div>
-                    ))}
-                  </div>
+                  <div className="signing-checks signing-checks-error">{blockingChecks?.map((check) => <div key={check.code}>{check.message}</div>)}</div>
                 )}
-
+                {(entitlementBlocking?.length || 0) > 0 && (
+                  <div className="signing-checks signing-checks-error">{entitlementBlocking?.map((message, index) => <div key={`entitlement-error-${index}`}>{message}</div>)}</div>
+                )}
                 {(warnings?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-warning">
-                    {warnings?.map((check) => (
-                      <div key={check.code}>{check.message}</div>
-                    ))}
-                  </div>
+                  <div className="signing-checks signing-checks-warning">{warnings?.map((check) => <div key={check.code}>{check.message}</div>)}</div>
+                )}
+                {(entitlementWarnings?.length || 0) > 0 && (
+                  <div className="signing-checks signing-checks-warning">{entitlementWarnings?.map((message, index) => <div key={`entitlement-warning-${index}`}>{message}</div>)}</div>
                 )}
 
-                {item.outputPath && (
-                  <div className="signing-result-path">Signed IPA: {item.outputPath}</div>
+                {item.validation && (
+                  <div className="signing-note">
+                    Signed IPA validation: {item.validation.valid ? "passed" : "failed"}; extensions {item.validation.extensionProfiles}/{item.validation.extensionCount} profiled.
+                  </div>
                 )}
-                {item.error && (
-                  <div className="signing-checks signing-checks-error">{item.error}</div>
-                )}
+                {item.outputPath && <div className="signing-result-path">Signed IPA: {item.outputPath}</div>}
+                {item.error && <div className="signing-checks signing-checks-error">{item.error}</div>}
               </article>
             );
           })}
