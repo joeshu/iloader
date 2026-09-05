@@ -57,14 +57,52 @@ pub enum AppError {
     Filesystem(String, String),
 }
 
+impl AppError {
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self,
+            AppError::SessionBusy
+                | AppError::DeviceComs(_)
+                | AppError::DeviceComsWithMessage(_, _)
+                | AppError::Usbmuxd(_, _)
+                | AppError::Download(_)
+                | AppError::Anisette(_)
+                | AppError::RemotePairing(_)
+                | AppError::OperationUpdate(_)
+        )
+    }
+
+    pub fn suggested_action(&self) -> &'static str {
+        match self {
+            AppError::NotLoggedIn => "sign_in",
+            AppError::SessionBusy => "retry",
+            AppError::NoDeviceSelected => "select_device",
+            AppError::NotEnoughAppIds(_) => "manage_app_ids",
+            AppError::MaxApps(_) => "remove_installed_apps",
+            AppError::AccountLocked(_) | AppError::Auth(_) => "reauthenticate",
+            AppError::DeviceComs(_)
+            | AppError::DeviceComsWithMessage(_, _)
+            | AppError::Usbmuxd(_, _)
+            | AppError::RemotePairing(_)
+            | AppError::LockdownPairing(_, _) => "reconnect_device",
+            AppError::Anisette(_) => "retry_anisette",
+            AppError::Keyring(_) | AppError::KeyringWithMessage(_, _) => "check_secure_storage",
+            AppError::Canceled(_) => "none",
+            _ => "review_details",
+        }
+    }
+}
+
 impl Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("AppError", 2)?;
+        let mut state = serializer.serialize_struct("AppError", 4)?;
         state.serialize_field("type", self.as_ref())?;
         state.serialize_field("message", &self.to_string())?;
+        state.serialize_field("retryable", &self.retryable())?;
+        state.serialize_field("suggestedAction", self.suggested_action())?;
         state.end()
     }
 }
