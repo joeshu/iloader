@@ -39,6 +39,8 @@ pub enum AppError {
     Usbmuxd(String, String),
     #[error("Not logged in")]
     NotLoggedIn,
+    #[error("Signing session is busy; try again shortly")]
+    SessionBusy,
     #[error("No device selected")]
     NoDeviceSelected,
     #[error("{0}")]
