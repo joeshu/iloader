@@ -2,6 +2,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use isideload::sideload::application::Application;
@@ -13,6 +14,7 @@ use crate::{
     error::AppError,
     preflight_cache::invalidate_team,
     sideload::{SideloaderGuard, SideloaderMutex},
+    signing_report::write_signing_report,
     signing_validation::{SignedIpaValidation, validate_signed_ipa_path},
 };
 
@@ -33,6 +35,7 @@ pub struct BatchSigningItemResult {
     pub output_path: Option<String>,
     pub validation: Option<SignedIpaValidation>,
     pub error: Option<String>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +45,9 @@ pub struct BatchSigningReport {
     pub signed: usize,
     pub failed: usize,
     pub output_directory: String,
+    pub batch_duration_ms: u64,
+    pub report_path: Option<String>,
+    pub report_error: Option<String>,
     pub items: Vec<BatchSigningItemResult>,
 }
 
@@ -54,6 +60,10 @@ pub struct BatchSigningProgress {
     pub bundle_identifier: Option<String>,
     pub output_path: Option<String>,
     pub error: Option<String>,
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn emit_progress(
@@ -247,6 +257,7 @@ fn failed_item(
     bundle_identifier: Option<String>,
     validation: Option<SignedIpaValidation>,
     error: String,
+    duration_ms: u64,
 ) -> BatchSigningItemResult {
     BatchSigningItemResult {
         input_path,
@@ -256,6 +267,7 @@ fn failed_item(
         output_path: None,
         validation,
         error: Some(error),
+        duration_ms,
     }
 }
 
@@ -266,6 +278,7 @@ pub async fn batch_sign_ipas(
     ipa_paths: Vec<String>,
     output_directory: String,
 ) -> Result<BatchSigningReport, AppError> {
+    let batch_started = Instant::now();
     let output_dir = PathBuf::from(&output_directory);
     fs::create_dir_all(&output_dir).map_err(|error| {
         AppError::Filesystem(
@@ -280,6 +293,7 @@ pub async fn batch_sign_ipas(
     let mut items = Vec::with_capacity(ipa_paths.len());
 
     for input in ipa_paths {
+        let item_started = Instant::now();
         emit_progress(&window, &input, "inspecting", None, None, None, None);
         let input_path = PathBuf::from(&input);
 
@@ -299,7 +313,14 @@ pub async fn batch_sign_ipas(
                     None,
                     Some(message.clone()),
                 );
-                items.push(failed_item(input, None, None, None, message));
+                items.push(failed_item(
+                    input,
+                    None,
+                    None,
+                    None,
+                    message,
+                    elapsed_ms(item_started),
+                ));
                 continue;
             }
         };
@@ -324,8 +345,6 @@ pub async fn batch_sign_ipas(
             )
             .await;
 
-        // sign_app may create or mutate App IDs and provisioning profiles even when a later
-        // signing stage fails, so cached preflight state must never survive the attempt.
         invalidate_team(&account_scope, &team_id);
 
         let (signed_app_path, _special) = match signing_result {
@@ -347,6 +366,7 @@ pub async fn batch_sign_ipas(
                     bundle_identifier,
                     None,
                     message,
+                    elapsed_ms(item_started),
                 ));
                 continue;
             }
@@ -396,6 +416,7 @@ pub async fn batch_sign_ipas(
                     output_path: Some(output_path_string),
                     validation: Some(validation),
                     error: None,
+                    duration_ms: elapsed_ms(item_started),
                 });
             }
             Ok(validation) => {
@@ -416,6 +437,7 @@ pub async fn batch_sign_ipas(
                     bundle_identifier,
                     Some(validation),
                     message,
+                    elapsed_ms(item_started),
                 ));
             }
             Err(error) => {
@@ -436,6 +458,7 @@ pub async fn batch_sign_ipas(
                     bundle_identifier,
                     None,
                     message,
+                    elapsed_ms(item_started),
                 ));
             }
         }
@@ -454,12 +477,32 @@ pub async fn batch_sign_ipas(
         .filter(|item| matches!(item.status, BatchSigningStatus::Signed))
         .count();
     let failed = items.len().saturating_sub(signed);
+    let batch_duration_ms = elapsed_ms(batch_started);
+
+    let (report_path, report_error) = match write_signing_report(
+        &output_dir,
+        &team_id,
+        &items,
+        batch_duration_ms,
+    ) {
+        Ok(path) => (Some(path.display().to_string()), None),
+        Err(error) => {
+            tracing::warn!("Failed to write signing-report.json: {}", error);
+            (
+                None,
+                Some("Signed outputs completed, but signing-report.json could not be written.".to_string()),
+            )
+        }
+    };
 
     Ok(BatchSigningReport {
         total: items.len(),
         signed,
         failed,
         output_directory,
+        batch_duration_ms,
+        report_path,
+        report_error,
         items,
     })
 }
