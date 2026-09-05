@@ -404,7 +404,9 @@
 }
 
 @media (max-width: 620px) {
-  .signing-health-checks {
+  .signing-health-checks,
+  .signing-asset-grid,
+  .signing-toolbar {
     grid-template-columns: 1fr;
   }
 
