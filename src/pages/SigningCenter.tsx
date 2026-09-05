@@ -176,6 +176,38 @@ type CompleteSigningBundleExportInfo = {
   profiles: Array<unknown>;
 };
 
+type SigningBundleImportCheck = {
+  code: string;
+  severity: "info" | "warning" | "error";
+  passed: boolean;
+  message: string;
+};
+
+type SigningBundleImportedProfile = {
+  role: string;
+  name: string;
+  bundleIdentifier: string;
+  signingBundleIdentifier: string;
+  profileUuid: string;
+  profileName: string;
+  profileExpirationDate: string;
+  isFreeProvisioningProfile?: boolean | null;
+  archivePath: string;
+};
+
+type SigningBundleImportReport = {
+  valid: boolean;
+  canActivate: boolean;
+  archivePath: string;
+  sourceIpa: string;
+  teamId: string;
+  currentTeamId: string;
+  certificateSerialNumber: string;
+  profileCount: number;
+  profiles: SigningBundleImportedProfile[];
+  checks: SigningBundleImportCheck[];
+};
+
 type DiagnosticBundleExportInfo = {
   archivePath: string;
   includedLogFiles: number;
@@ -274,6 +306,8 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const [signing, setSigning] = useState(false);
   const [exportingBundlePath, setExportingBundlePath] = useState<string | null>(null);
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
+  const [inspectingImport, setInspectingImport] = useState(false);
+  const [importReport, setImportReport] = useState<SigningBundleImportReport | null>(null);
 
   useEffect(() => {
     const persisted: PersistedQueueState = { version: 1, outputDirectory, queue };
@@ -375,6 +409,32 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         .map((path) => ({ path, stage: "pending" as QueueStage }));
       return [...current, ...added];
     });
+  }, []);
+
+  const inspectSigningBundle = useCallback(async () => {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: "Signing bundle", extensions: ["zip"] }],
+    });
+    if (typeof selected !== "string") return;
+
+    setInspectingImport(true);
+    setImportReport(null);
+    try {
+      const report = await invoke<SigningBundleImportReport>("inspect_signing_bundle_import", {
+        archivePath: selected,
+      });
+      setImportReport(report);
+      if (report.valid) {
+        toast.success(`Signing bundle verified: ${report.profileCount} profile(s) are structurally valid.`);
+      } else {
+        toast.warning("Signing bundle inspection found blocking validation errors.");
+      }
+    } catch (error) {
+      toast.error(`Failed to inspect signing bundle: ${String(error)}`);
+    } finally {
+      setInspectingImport(false);
+    }
   }, []);
 
   const selectOutputDirectory = useCallback(async () => {
@@ -586,7 +646,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     return { ready, blocked, signed, failed };
   }, [queue]);
 
-  const busy = scanning || signing;
+  const busy = scanning || signing || inspectingImport;
   const assetBusy = loadingSnapshot || loadingHealth;
 
   return (
@@ -643,6 +703,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       <div className="signing-toolbar">
         <button onClick={selectIpas} disabled={busy}>Select IPAs</button>
         <button onClick={scanQueue} disabled={queue.length === 0 || busy}>{scanning ? "Scanning…" : "Scan & preflight"}</button>
+        <button onClick={inspectSigningBundle} disabled={busy}>{inspectingImport ? "Inspecting bundle…" : "Inspect signing bundle"}</button>
         <button onClick={selectOutputDirectory} disabled={busy}>Choose output folder</button>
         <button className="signing-primary" onClick={signReady} disabled={readyPaths.length === 0 || busy}>
           {signing ? "Signing batch…" : `Sign ready (${readyPaths.length})`}
@@ -653,6 +714,48 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         </button>
         <button onClick={clearCompleted} disabled={summary.signed === 0 || busy}>Clear completed</button>
       </div>
+
+      {importReport && (
+        <section className={`signing-health-panel health-${importReport.valid ? "healthy" : "error"}`}>
+          <div className="signing-health-header">
+            <div>
+              <span className="signing-health-kicker">Signing Bundle import inspection</span>
+              <div className="signing-health-title-row">
+                <strong>{importReport.valid ? "Verified" : "Blocked"}</strong>
+                <span className={`signing-health-badge health-${importReport.valid ? "healthy" : "error"}`}>
+                  {importReport.valid ? "validated" : "invalid"}
+                </span>
+              </div>
+            </div>
+            <small>{fileName(importReport.archivePath)}</small>
+          </div>
+          <div className="signing-asset-grid">
+            <div className="signing-asset-card"><span>Source IPA</span><strong>{importReport.sourceIpa || "—"}</strong><small>Bundle metadata</small></div>
+            <div className="signing-asset-card"><span>Team</span><strong>{importReport.teamId || "—"}</strong><small>{importReport.teamId === importReport.currentTeamId ? "Matches active team" : `Active: ${importReport.currentTeamId}`}</small></div>
+            <div className="signing-asset-card"><span>Certificate</span><strong>{importReport.certificateSerialNumber || "—"}</strong><small>Serial number</small></div>
+            <div className="signing-asset-card"><span>Profiles</span><strong>{importReport.profileCount}</strong><small>{importReport.canActivate ? "Eligible for password-gated activation" : "Activation blocked"}</small></div>
+          </div>
+          <div className="signing-health-checks">
+            {importReport.checks.map((check) => {
+              const status: AssetHealthStatus = check.passed ? (check.severity === "warning" ? "warning" : "healthy") : "error";
+              return (
+                <div className={`signing-health-check health-${status}`} key={check.code}>
+                  <div className="signing-health-check-title">
+                    <strong>{check.code}</strong>
+                    <span>{check.passed ? "Passed" : "Blocked"}</span>
+                  </div>
+                  <small>{check.message}</small>
+                </div>
+              );
+            })}
+          </div>
+          <div className="signing-note">
+            {importReport.canActivate
+              ? "Integrity and team/profile validation passed. Private-key activation is not performed automatically; the next step must require the separately supplied PKCS#12 password."
+              : "Activation is disabled until every blocking import validation check passes."}
+          </div>
+        </section>
+      )}
 
       <div className="signing-output-path" title={outputDirectory}>
         <span>Output</span><strong>{outputDirectory || "Choose a destination for signed IPA files"}</strong>
