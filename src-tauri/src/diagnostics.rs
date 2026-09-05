@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use chrono::Utc;
@@ -183,7 +183,9 @@ pub async fn export_signing_diagnostics(
     let Some(directory) = directory else {
         return Ok(None);
     };
-    let directory = PathBuf::from(directory.to_string());
+    let directory = directory.into_path().map_err(|error| {
+        AppError::Filesystem("Invalid diagnostics export directory".into(), error.to_string())
+    })?;
     fs::create_dir_all(&directory).map_err(|error| {
         AppError::Filesystem(
             "Failed to create diagnostics output directory".into(),
