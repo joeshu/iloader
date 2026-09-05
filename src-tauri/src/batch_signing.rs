@@ -25,6 +25,15 @@ pub enum BatchSigningStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSigningStageTimings {
+    pub inspection_ms: u64,
+    pub signing_ms: u64,
+    pub packaging_ms: u64,
+    pub validation_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchSigningItemResult {
@@ -36,6 +45,7 @@ pub struct BatchSigningItemResult {
     pub validation: Option<SignedIpaValidation>,
     pub error: Option<String>,
     pub duration_ms: u64,
+    pub stage_timings: BatchSigningStageTimings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -258,6 +268,7 @@ fn failed_item(
     validation: Option<SignedIpaValidation>,
     error: String,
     duration_ms: u64,
+    stage_timings: BatchSigningStageTimings,
 ) -> BatchSigningItemResult {
     BatchSigningItemResult {
         input_path,
@@ -268,6 +279,7 @@ fn failed_item(
         validation,
         error: Some(error),
         duration_ms,
+        stage_timings,
     }
 }
 
@@ -294,10 +306,14 @@ pub async fn batch_sign_ipas(
 
     for input in ipa_paths {
         let item_started = Instant::now();
+        let mut timings = BatchSigningStageTimings::default();
         emit_progress(&window, &input, "inspecting", None, None, None, None);
         let input_path = PathBuf::from(&input);
 
-        let (app_name, bundle_identifier) = match Application::new(input_path.clone()) {
+        let inspection_started = Instant::now();
+        let inspection = Application::new(input_path.clone());
+        timings.inspection_ms = elapsed_ms(inspection_started);
+        let (app_name, bundle_identifier) = match inspection {
             Ok(application) => (
                 application.main_app_name().ok(),
                 application.main_bundle_id().ok(),
@@ -320,6 +336,7 @@ pub async fn batch_sign_ipas(
                     None,
                     message,
                     elapsed_ms(item_started),
+                    timings,
                 ));
                 continue;
             }
@@ -335,6 +352,7 @@ pub async fn batch_sign_ipas(
             None,
         );
 
+        let signing_started = Instant::now();
         let signing_result = sideloader
             .get_mut()
             .sign_app(
@@ -344,6 +362,7 @@ pub async fn batch_sign_ipas(
                 None::<fn(f32) -> std::future::Ready<()>>,
             )
             .await;
+        timings.signing_ms = elapsed_ms(signing_started);
 
         invalidate_team(&account_scope, &team_id);
 
@@ -367,6 +386,7 @@ pub async fn batch_sign_ipas(
                     None,
                     message,
                     elapsed_ms(item_started),
+                    timings,
                 ));
                 continue;
             }
@@ -384,20 +404,49 @@ pub async fn batch_sign_ipas(
             None,
         );
 
-        let package_and_validate = package_signed_app(&signed_app_path, &output_path).and_then(|_| {
+        let packaging_started = Instant::now();
+        let packaging_result = package_signed_app(&signed_app_path, &output_path);
+        timings.packaging_ms = elapsed_ms(packaging_started);
+
+        if let Err(error) = packaging_result {
+            let message = format!("Packaging failed: {error}");
+            let _ = fs::remove_file(&output_path);
             emit_progress(
                 &window,
                 &input,
-                "validating",
+                "failed",
                 app_name.clone(),
                 bundle_identifier.clone(),
-                Some(output_path_string.clone()),
                 None,
+                Some(message.clone()),
             );
-            validate_signed_ipa_path(&output_path)
-        });
+            items.push(failed_item(
+                input,
+                app_name,
+                bundle_identifier,
+                None,
+                message,
+                elapsed_ms(item_started),
+                timings,
+            ));
+            let _ = fs::remove_dir_all(&signed_app_path);
+            continue;
+        }
 
-        match package_and_validate {
+        emit_progress(
+            &window,
+            &input,
+            "validating",
+            app_name.clone(),
+            bundle_identifier.clone(),
+            Some(output_path_string.clone()),
+            None,
+        );
+        let validation_started = Instant::now();
+        let validation_result = validate_signed_ipa_path(&output_path);
+        timings.validation_ms = elapsed_ms(validation_started);
+
+        match validation_result {
             Ok(validation) if validation.valid => {
                 emit_progress(
                     &window,
@@ -417,6 +466,7 @@ pub async fn batch_sign_ipas(
                     validation: Some(validation),
                     error: None,
                     duration_ms: elapsed_ms(item_started),
+                    stage_timings: timings,
                 });
             }
             Ok(validation) => {
@@ -438,10 +488,11 @@ pub async fn batch_sign_ipas(
                     Some(validation),
                     message,
                     elapsed_ms(item_started),
+                    timings,
                 ));
             }
             Err(error) => {
-                let message = format!("Packaging or validation failed: {error}");
+                let message = format!("Validation failed: {error}");
                 let _ = fs::remove_file(&output_path);
                 emit_progress(
                     &window,
@@ -459,6 +510,7 @@ pub async fn batch_sign_ipas(
                     None,
                     message,
                     elapsed_ms(item_started),
+                    timings,
                 ));
             }
         }
