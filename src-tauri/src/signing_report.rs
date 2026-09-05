@@ -43,10 +43,8 @@ struct SigningReportDocument {
 }
 
 fn basename(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
+    path.rsplit(['/', '\\'])
+        .find(|value| !value.is_empty())
         .unwrap_or("unknown")
         .to_string()
 }
@@ -177,7 +175,7 @@ mod tests {
 
     #[test]
     fn basename_never_leaks_parent_directories() {
-        assert_eq!(basename(r"C:\\Users\\Alice\\secret\\Demo.ipa"), "Demo.ipa");
+        assert_eq!(basename(r"C:\Users\Alice\secret\Demo.ipa"), "Demo.ipa");
         assert_eq!(basename("/home/alice/private/Demo.ipa"), "Demo.ipa");
     }
 }
