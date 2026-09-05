@@ -436,6 +436,27 @@ fn post_process_signed_app(
     result
 }
 
+fn join_post_process_worker(job: PendingPostProcess) -> (BatchSigningItemResult, bool) {
+    match job.handle.join() {
+        Ok(result) => (result, false),
+        Err(_) => {
+            let message = "Post-processing worker terminated unexpectedly.".to_string();
+            (
+                failed_item(
+                    job.input_path,
+                    job.app_name,
+                    job.bundle_identifier,
+                    None,
+                    message,
+                    elapsed_ms(job.item_started),
+                    job.stage_timings,
+                ),
+                true,
+            )
+        }
+    }
+}
+
 fn collect_one_pending(
     pending: &mut VecDeque<PendingPostProcess>,
     window: &Window,
@@ -445,30 +466,19 @@ fn collect_one_pending(
         return;
     };
 
-    match job.handle.join() {
-        Ok(result) => items.push(result),
-        Err(_) => {
-            let message = "Post-processing worker terminated unexpectedly.".to_string();
-            emit_progress(
-                window,
-                &job.input_path,
-                "failed",
-                job.app_name.clone(),
-                job.bundle_identifier.clone(),
-                None,
-                Some(message.clone()),
-            );
-            items.push(failed_item(
-                job.input_path,
-                job.app_name,
-                job.bundle_identifier,
-                None,
-                message,
-                elapsed_ms(job.item_started),
-                job.stage_timings,
-            ));
-        }
+    let (result, worker_panicked) = join_post_process_worker(job);
+    if worker_panicked {
+        emit_progress(
+            window,
+            &result.input_path,
+            "failed",
+            result.app_name.clone(),
+            result.bundle_identifier.clone(),
+            None,
+            result.error.clone(),
+        );
     }
+    items.push(result);
 }
 
 #[tauri::command]
@@ -670,4 +680,63 @@ pub async fn batch_sign_ipas(
         report_error,
         items,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_reservation_avoids_existing_and_inflight_collisions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output_dir = temp.path();
+        let input = Path::new("Demo.ipa");
+
+        let first = unique_output_path(output_dir, input, &HashSet::new());
+        assert_eq!(first, output_dir.join("Demo-signed.ipa"));
+
+        let mut reserved = HashSet::new();
+        reserved.insert(first);
+        let second = unique_output_path(output_dir, input, &reserved);
+        assert_eq!(second, output_dir.join("Demo-signed-2.ipa"));
+
+        File::create(&second).expect("existing output");
+        reserved.clear();
+        reserved.insert(output_dir.join("Demo-signed.ipa"));
+        let third = unique_output_path(output_dir, input, &reserved);
+        assert_eq!(third, output_dir.join("Demo-signed-3.ipa"));
+    }
+
+    #[test]
+    fn worker_panic_is_converted_to_one_failed_item() {
+        let timings = BatchSigningStageTimings {
+            inspection_ms: 7,
+            signing_ms: 11,
+            packaging_ms: 0,
+            validation_ms: 0,
+        };
+        let job = PendingPostProcess {
+            input_path: "Demo.ipa".to_string(),
+            app_name: Some("Demo".to_string()),
+            bundle_identifier: Some("com.example.demo".to_string()),
+            item_started: Instant::now(),
+            stage_timings: timings.clone(),
+            handle: thread::spawn(|| -> BatchSigningItemResult {
+                panic!("intentional test panic");
+            }),
+        };
+
+        let (result, panicked) = join_post_process_worker(job);
+        assert!(panicked);
+        assert!(matches!(result.status, BatchSigningStatus::Failed));
+        assert_eq!(result.input_path, "Demo.ipa");
+        assert_eq!(result.app_name.as_deref(), Some("Demo"));
+        assert_eq!(result.bundle_identifier.as_deref(), Some("com.example.demo"));
+        assert_eq!(
+            result.error.as_deref(),
+            Some("Post-processing worker terminated unexpectedly.")
+        );
+        assert_eq!(result.stage_timings.inspection_ms, timings.inspection_ms);
+        assert_eq!(result.stage_timings.signing_ms, timings.signing_ms);
+    }
 }
