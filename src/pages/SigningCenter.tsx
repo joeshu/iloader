@@ -19,6 +19,30 @@ type SigningCenterSnapshot = {
   availableAppIds?: number | null;
 };
 
+type AssetHealthStatus = "healthy" | "warning" | "error";
+
+type AssetHealthCheck = {
+  code: string;
+  status: AssetHealthStatus;
+  title: string;
+  message: string;
+};
+
+type SigningAssetHealthReport = {
+  generatedAtUtc: string;
+  cached: boolean;
+  cacheTtlSeconds: number;
+  teamId: string;
+  email: string;
+  overallStatus: AssetHealthStatus;
+  certificateCount: number;
+  appIdCount: number;
+  deviceCount: number;
+  maxAppIds?: number | null;
+  availableAppIds?: number | null;
+  checks: AssetHealthCheck[];
+};
+
 type IpaProfileMatch = {
   appIdId: string;
   identifier: string;
@@ -201,6 +225,12 @@ const stageLabel: Record<QueueStage, string> = {
   failed: "Failed",
 };
 
+const healthLabel: Record<AssetHealthStatus, string> = {
+  healthy: "Healthy",
+  warning: "Attention",
+  error: "Blocked",
+};
+
 const restoreQueueState = (): PersistedQueueState => {
   try {
     const raw = window.localStorage.getItem(PERSISTENCE_KEY);
@@ -235,9 +265,11 @@ const restoreQueueState = (): PersistedQueueState => {
 export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const initialState = useRef(restoreQueueState()).current;
   const [snapshot, setSnapshot] = useState<SigningCenterSnapshot | null>(null);
+  const [assetHealth, setAssetHealth] = useState<SigningAssetHealthReport | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>(initialState.queue);
   const [outputDirectory, setOutputDirectory] = useState(initialState.outputDirectory);
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
+  const [loadingHealth, setLoadingHealth] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [signing, setSigning] = useState(false);
   const [exportingBundlePath, setExportingBundlePath] = useState<string | null>(null);
@@ -263,9 +295,28 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     }
   }, []);
 
+  const loadAssetHealth = useCallback(async (forceRefresh = false) => {
+    setLoadingHealth(true);
+    try {
+      setAssetHealth(
+        await invoke<SigningAssetHealthReport>("get_signing_asset_health", {
+          forceRefresh,
+        }),
+      );
+    } catch (error) {
+      toast.error(`Failed to load signing asset health: ${String(error)}`);
+    } finally {
+      setLoadingHealth(false);
+    }
+  }, []);
+
+  const refreshAssets = useCallback(async () => {
+    await Promise.all([loadSnapshot(), loadAssetHealth(true)]);
+  }, [loadSnapshot, loadAssetHealth]);
+
   useEffect(() => {
-    loadSnapshot();
-  }, [loadSnapshot]);
+    void Promise.all([loadSnapshot(), loadAssetHealth(false)]);
+  }, [loadSnapshot, loadAssetHealth]);
 
   useEffect(() => {
     let disposed = false;
@@ -426,14 +477,14 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
 
         if (report.failed === 0) toast.success(`Signed and validated ${report.signed} IPA(s).`);
         else toast.warning(`Signed and validated ${report.signed}; ${report.failed} failed.`);
-        loadSnapshot();
+        void Promise.all([loadSnapshot(), loadAssetHealth(true)]);
       } catch (error) {
         toast.error(`Batch signing failed: ${String(error)}`);
       } finally {
         setSigning(false);
       }
     },
-    [outputDirectory, loadSnapshot],
+    [outputDirectory, loadSnapshot, loadAssetHealth],
   );
 
   const readyPaths = useMemo(
@@ -536,6 +587,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   }, [queue]);
 
   const busy = scanning || signing;
+  const assetBusy = loadingSnapshot || loadingHealth;
 
   return (
     <div className="signing-center">
@@ -546,16 +598,46 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             Preflight metadata, entitlements and signing assets; persist the queue across restarts; sign, validate and retry failures independently.
           </p>
         </div>
-        <button onClick={loadSnapshot} disabled={loadingSnapshot || busy}>
-          {loadingSnapshot ? "Refreshing…" : "Refresh assets"}
+        <button onClick={refreshAssets} disabled={assetBusy || busy}>
+          {assetBusy ? "Refreshing…" : "Refresh assets"}
         </button>
       </div>
 
+      {assetHealth && (
+        <section className={`signing-health-panel health-${assetHealth.overallStatus}`}>
+          <div className="signing-health-header">
+            <div>
+              <span className="signing-health-kicker">Signing asset health</span>
+              <div className="signing-health-title-row">
+                <strong>{healthLabel[assetHealth.overallStatus]}</strong>
+                <span className={`signing-health-badge health-${assetHealth.overallStatus}`}>
+                  {assetHealth.overallStatus}
+                </span>
+              </div>
+            </div>
+            <small>
+              {assetHealth.cached ? `Cached · TTL ${assetHealth.cacheTtlSeconds}s` : "Live refresh"}
+            </small>
+          </div>
+          <div className="signing-health-checks">
+            {assetHealth.checks.map((check) => (
+              <div className={`signing-health-check health-${check.status}`} key={check.code}>
+                <div className="signing-health-check-title">
+                  <strong>{check.title}</strong>
+                  <span>{healthLabel[check.status]}</span>
+                </div>
+                <small>{check.message}</small>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="signing-asset-grid">
-        <div className="signing-asset-card"><span>Team</span><strong>{snapshot?.teamId || "—"}</strong><small>{snapshot?.email || "Not loaded"}</small></div>
-        <div className="signing-asset-card"><span>Certificates</span><strong>{snapshot?.certificates.length ?? "—"}</strong><small>Development identities</small></div>
-        <div className="signing-asset-card"><span>App IDs</span><strong>{snapshot?.appIds.length ?? "—"}</strong><small>{snapshot?.availableAppIds == null ? "Quota unavailable" : `${snapshot.availableAppIds} slots available`}</small></div>
-        <div className="signing-asset-card"><span>Devices</span><strong>{snapshot?.devices.length ?? "—"}</strong><small>{deviceUdid ? "Current device linked to preflight" : "No target device selected"}</small></div>
+        <div className="signing-asset-card"><span>Team</span><strong>{snapshot?.teamId || assetHealth?.teamId || "—"}</strong><small>{snapshot?.email || assetHealth?.email || "Not loaded"}</small></div>
+        <div className="signing-asset-card"><span>Certificates</span><strong>{assetHealth?.certificateCount ?? snapshot?.certificates.length ?? "—"}</strong><small>Development identities</small></div>
+        <div className="signing-asset-card"><span>App IDs</span><strong>{assetHealth?.appIdCount ?? snapshot?.appIds.length ?? "—"}</strong><small>{assetHealth?.availableAppIds == null ? (snapshot?.availableAppIds == null ? "Quota unavailable" : `${snapshot.availableAppIds} slots available`) : `${assetHealth.availableAppIds} slots available`}</small></div>
+        <div className="signing-asset-card"><span>Devices</span><strong>{assetHealth?.deviceCount ?? snapshot?.devices.length ?? "—"}</strong><small>{deviceUdid ? "Current device linked to preflight" : "No target device selected"}</small></div>
       </div>
 
       <div className="signing-toolbar">
