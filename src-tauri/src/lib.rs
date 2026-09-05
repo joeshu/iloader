@@ -8,6 +8,7 @@ mod sideload;
 mod pairing;
 #[macro_use]
 mod secure_storage;
+mod asset_health;
 mod batch_signing;
 mod diagnostics;
 mod entitlement_compatibility;
@@ -25,6 +26,7 @@ use crate::{
         list_app_ids, logged_in_as, login_new, login_stored, reset_anisette_state,
         revoke_certificate,
     },
+    asset_health::get_signing_asset_health,
     batch_signing::batch_sign_ipas,
     diagnostics::export_signing_diagnostics,
     device::{
@@ -136,6 +138,7 @@ pub fn run() {
             export_ipa_signing_bundle,
             export_signing_diagnostics,
             get_signing_center_snapshot,
+            get_signing_asset_health,
             preflight_signing,
             inspect_ipa_and_match_profiles,
             preflight_ipa,
