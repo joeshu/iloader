@@ -18,6 +18,7 @@ mod logging;
 mod operation;
 mod preflight_cache;
 mod signing_bundle;
+mod signing_bundle_import;
 mod signing_center;
 mod signing_validation;
 
@@ -42,6 +43,7 @@ use crate::{
     secure_storage::{force_disable_keyring, keyring_available},
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
     signing_bundle::export_ipa_signing_bundle,
+    signing_bundle_import::inspect_signing_bundle_import,
     signing_center::{get_signing_center_snapshot, preflight_signing},
     signing_validation::validate_signed_ipa,
 };
@@ -137,6 +139,7 @@ pub fn run() {
             delete_app_id,
             export_signing_bundle,
             export_ipa_signing_bundle,
+            inspect_signing_bundle_import,
             export_signing_diagnostics,
             get_signing_center_snapshot,
             get_signing_asset_health,
