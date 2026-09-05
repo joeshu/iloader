@@ -11,6 +11,7 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     error::AppError,
+    preflight_cache::invalidate_team,
     sideload::{SideloaderGuard, SideloaderMutex},
     signing_validation::{SignedIpaValidation, validate_signed_ipa_path},
 };
@@ -274,6 +275,8 @@ pub async fn batch_sign_ipas(
     })?;
 
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let account_scope = sideloader.get_mut().get_email().to_string();
+    let team_id = sideloader.get_mut().get_team().await?.team_id;
     let mut items = Vec::with_capacity(ipa_paths.len());
 
     for input in ipa_paths {
@@ -320,6 +323,10 @@ pub async fn batch_sign_ipas(
                 None::<fn(f32) -> std::future::Ready<()>>,
             )
             .await;
+
+        // sign_app may create or mutate App IDs and provisioning profiles even when a later
+        // signing stage fails, so cached preflight state must never survive the attempt.
+        invalidate_team(&account_scope, &team_id);
 
         let (signed_app_path, _special) = match signing_result {
             Ok(result) => result,
