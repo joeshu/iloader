@@ -1,0 +1,62 @@
+name: "Release iloader 2.4.1"
+
+on:
+  push:
+    branches:
+      - "main"
+    paths:
+      - ".github/workflows/release-2.4.1.yml"
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Run Rust regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Disable updater artifacts for release build
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
+
+      - name: Build Windows installers
+        run: npm run tauri build
+
+      - name: Publish Tagv5 release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Tagv5
+          name: Tagv5
+          target_commitish: ${{ github.sha }}
+          body: |
+            iloader 2.4.1
+
+            Hotfix:
+            - Fix false `Not logged in` errors on the Certificates page caused by concurrent Sideloader-backed reads.
+            - Serialize certificate and App ID loading under the current Sideloader session model.
+            - Add Simplified Chinese labels and messages for signing-bundle export controls.
+            - Keep the 2.4.0 Signing Center P1 features and security boundaries unchanged.
+
+            Validation:
+            - Hotfix PR Build #111 passed.
+            - Merge-to-main Build #112 passed.
+          files: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
+          fail_on_unmatched_files: true
