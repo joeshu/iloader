@@ -4,7 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import i18n from "../i18next";
 
 export type SigningCenterProps = {
   deviceUdid?: string | null;
@@ -260,23 +262,20 @@ const formatDuration = (milliseconds: number) => {
   return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 2 : 1)} s`;
 };
 
-const stageLabel: Record<QueueStage, string> = {
-  pending: "Pending",
-  scanning: "Scanning",
-  ready: "Ready",
-  blocked: "Blocked",
-  inspecting: "Inspecting",
-  signing: "Signing",
-  packaging: "Packaging",
-  validating: "Validating",
-  signed: "Signed",
-  failed: "Failed",
-};
-
-const healthLabel: Record<AssetHealthStatus, string> = {
-  healthy: "Healthy",
-  warning: "Attention",
-  error: "Blocked",
+const formatInvokeError = (error: unknown): string => {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const candidate = error as { message?: unknown; type?: unknown };
+    if (typeof candidate.message === "string") return candidate.message;
+    if (typeof candidate.type === "string") return candidate.type;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "Unknown error";
+    }
+  }
+  return String(error);
 };
 
 const restoreQueueState = (): PersistedQueueState => {
@@ -301,7 +300,7 @@ const restoreQueueState = (): PersistedQueueState => {
             error:
               item.stage === "pending"
                 ? item.error
-                : "Previous session state restored. Re-run preflight before signing.",
+                : i18n.t("signing_center.restored_queue"),
           };
         }),
     };
@@ -311,6 +310,7 @@ const restoreQueueState = (): PersistedQueueState => {
 };
 
 export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
+  const { t } = useTranslation();
   const initialState = useRef(restoreQueueState()).current;
   const [snapshot, setSnapshot] = useState<SigningCenterSnapshot | null>(null);
   const [assetHealth, setAssetHealth] = useState<SigningAssetHealthReport | null>(null);
@@ -326,6 +326,17 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const [importReport, setImportReport] = useState<SigningBundleImportReport | null>(null);
   const [lastSigningReport, setLastSigningReport] = useState<BatchSigningReport | null>(null);
 
+  const stageLabel = useCallback((stage: QueueStage) => t(`signing_center.stage.${stage}`), [t]);
+  const healthLabel = useCallback(
+    (status: AssetHealthStatus) =>
+      status === "healthy"
+        ? t("signing_center.healthy")
+        : status === "warning"
+          ? t("signing_center.attention")
+          : t("signing_center.blocked"),
+    [t],
+  );
+
   useEffect(() => {
     const persisted: PersistedQueueState = { version: 1, outputDirectory, queue };
     try {
@@ -340,11 +351,11 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     try {
       setSnapshot(await invoke<SigningCenterSnapshot>("get_signing_center_snapshot"));
     } catch (error) {
-      toast.error(`Failed to load Signing Center: ${String(error)}`);
+      toast.error(`${t("signing_center.load_failed")}: ${formatInvokeError(error)}`);
     } finally {
       setLoadingSnapshot(false);
     }
-  }, []);
+  }, [t]);
 
   const loadAssetHealth = useCallback(async (forceRefresh = false) => {
     setLoadingHealth(true);
@@ -353,11 +364,11 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         await invoke<SigningAssetHealthReport>("get_signing_asset_health", { forceRefresh }),
       );
     } catch (error) {
-      toast.error(`Failed to load signing asset health: ${String(error)}`);
+      toast.error(`${t("signing_center.asset_health_failed")}: ${formatInvokeError(error)}`);
     } finally {
       setLoadingHealth(false);
     }
-  }, []);
+  }, [t]);
 
   const refreshAssets = useCallback(async () => {
     await Promise.all([loadSnapshot(), loadAssetHealth(true)]);
@@ -412,7 +423,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const selectIpas = useCallback(async () => {
     const selected = await openDialog({
       multiple: true,
-      filters: [{ name: "IPA files", extensions: ["ipa"] }],
+      filters: [{ name: t("signing_center.ipa_files"), extensions: ["ipa"] }],
     });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
@@ -424,12 +435,12 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         .map((path) => ({ path, stage: "pending" as QueueStage }));
       return [...current, ...added];
     });
-  }, []);
+  }, [t]);
 
   const inspectSigningBundle = useCallback(async () => {
     const selected = await openDialog({
       multiple: false,
-      filters: [{ name: "Signing bundle", extensions: ["zip"] }],
+      filters: [{ name: t("signing_center.signing_bundle"), extensions: ["zip"] }],
     });
     if (typeof selected !== "string") return;
 
@@ -441,16 +452,16 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       });
       setImportReport(report);
       if (report.valid) {
-        toast.success(`Signing bundle validated and staged: ${report.profileCount} profile(s) passed inspection.`);
+        toast.success(t("signing_center.import_success", { count: report.profileCount }));
       } else {
-        toast.warning("Signing bundle inspection found blocking validation errors.");
+        toast.warning(t("signing_center.import_blocked"));
       }
     } catch (error) {
-      toast.error(`Failed to inspect signing bundle: ${String(error)}`);
+      toast.error(t("signing_center.import_failed", { error: formatInvokeError(error) }));
     } finally {
       setInspectingImport(false);
     }
-  }, []);
+  }, [t]);
 
   const selectOutputDirectory = useCallback(async () => {
     const selected = await openDialog({ directory: true, multiple: false });
@@ -479,7 +490,12 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             const result = report.items.find((candidate) => candidate.inputPath === item.path);
             if (!result) return item;
             if (!result.report) {
-              return { ...item, stage: "failed", report: undefined, error: result.error || "Preflight failed" };
+              return {
+                ...item,
+                stage: "failed",
+                report: undefined,
+                error: result.error || t("signing_center.preflight_failed"),
+              };
             }
             return {
               ...item,
@@ -491,7 +507,9 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         );
         return report;
       } catch (error) {
-        const message = `Batch preflight failed: ${String(error)}`;
+        const message = t("signing_center.batch_preflight_failed", {
+          error: formatInvokeError(error),
+        });
         setQueue((current) =>
           current.map((item) =>
             ipaPaths.includes(item.path) ? { ...item, stage: "failed", error: message } : item,
@@ -503,30 +521,40 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         setScanning(false);
       }
     },
-    [deviceUdid],
+    [deviceUdid, t],
   );
 
   const scanQueue = useCallback(async () => {
     const candidates = queue.filter((item) => item.stage !== "signed").map((item) => item.path);
     if (candidates.length === 0) {
-      toast.warning(queue.length === 0 ? "Select at least one IPA first." : "No unsigned IPA remains in the queue.");
+      toast.warning(
+        queue.length === 0
+          ? t("signing_center.select_ipa_first")
+          : t("signing_center.no_unsigned"),
+      );
       return;
     }
 
     const report = await preflightPaths(candidates);
     if (!report) return;
     if (report.blocked === 0 && report.failed === 0) {
-      toast.success(`${report.ready} IPA(s) are ready to sign.`);
+      toast.success(t("signing_center.ready_to_sign", { count: report.ready }));
     } else {
-      toast.warning(`${report.ready} ready, ${report.blocked} blocked, ${report.failed} failed inspection.`);
+      toast.warning(
+        t("signing_center.preflight_summary", {
+          ready: report.ready,
+          blocked: report.blocked,
+          failed: report.failed,
+        }),
+      );
     }
-  }, [queue, preflightPaths]);
+  }, [queue, preflightPaths, t]);
 
   const signPaths = useCallback(
     async (ipaPaths: string[]) => {
       if (ipaPaths.length === 0) return;
       if (!outputDirectory) {
-        toast.warning("Choose an output directory first.");
+        toast.warning(t("signing_center.choose_output_first"));
         return;
       }
 
@@ -552,21 +580,36 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
           }),
         );
 
-        const reportSuffix = report.reportPath ? ` Report: ${fileName(report.reportPath)}.` : "";
+        const reportSuffix = report.reportPath
+          ? t("signing_center.report_suffix", { name: fileName(report.reportPath) })
+          : "";
         if (report.failed === 0) {
-          toast.success(`Signed and validated ${report.signed} IPA(s) in ${formatDuration(report.batchDurationMs)}.${reportSuffix}`);
+          toast.success(
+            t("signing_center.signed_success", {
+              signed: report.signed,
+              duration: formatDuration(report.batchDurationMs),
+              report: reportSuffix,
+            }),
+          );
         } else {
-          toast.warning(`Signed ${report.signed}; ${report.failed} failed in ${formatDuration(report.batchDurationMs)}.${reportSuffix}`);
+          toast.warning(
+            t("signing_center.signed_partial", {
+              signed: report.signed,
+              failed: report.failed,
+              duration: formatDuration(report.batchDurationMs),
+              report: reportSuffix,
+            }),
+          );
         }
         if (report.reportError) toast.warning(report.reportError);
         void Promise.all([loadSnapshot(), loadAssetHealth(true)]);
       } catch (error) {
-        toast.error(`Batch signing failed: ${String(error)}`);
+        toast.error(t("signing_center.batch_signing_failed", { error: formatInvokeError(error) }));
       } finally {
         setSigning(false);
       }
     },
-    [outputDirectory, loadSnapshot, loadAssetHealth],
+    [outputDirectory, loadSnapshot, loadAssetHealth, t],
   );
 
   const readyPaths = useMemo(
@@ -581,7 +624,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       .filter((item) => item.stage === "failed" || item.stage === "blocked")
       .map((item) => item.path);
     if (retryPaths.length === 0) {
-      toast.info("No failed or blocked IPA needs retrying.");
+      toast.info(t("signing_center.no_retry_items"));
       return;
     }
 
@@ -592,15 +635,15 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       .map((item) => item.inputPath);
 
     if (nowReady.length === 0) {
-      toast.warning("Retry completed, but no IPA is currently eligible to sign.");
+      toast.warning(t("signing_center.retry_none_ready"));
       return;
     }
     if (!outputDirectory) {
-      toast.success(`${nowReady.length} retried IPA(s) are ready; choose an output folder to sign them.`);
+      toast.success(t("signing_center.retry_ready_choose_output", { count: nowReady.length }));
       return;
     }
     await signPaths(nowReady);
-  }, [queue, preflightPaths, outputDirectory, signPaths]);
+  }, [queue, preflightPaths, outputDirectory, signPaths, t]);
 
   const exportSigningBundle = useCallback(async (ipaPath: string) => {
     setExportingBundlePath(ipaPath);
@@ -610,18 +653,22 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         password: null,
       });
       if (!result) {
-        toast.info("Signing bundle export canceled.");
+        toast.info(t("signing_center.bundle_export_canceled"));
         return;
       }
       toast.success(
-        `Exported ${result.profiles.length} profile(s) to ${result.archivePath}. P12 password: ${result.p12Password}`,
+        t("signing_center.bundle_export_success", {
+          count: result.profiles.length,
+          path: result.archivePath,
+          password: result.p12Password,
+        }),
       );
     } catch (error) {
-      toast.error(`Failed to export signing bundle: ${String(error)}`);
+      toast.error(t("signing_center.bundle_export_failed", { error: formatInvokeError(error) }));
     } finally {
       setExportingBundlePath(null);
     }
-  }, []);
+  }, [t]);
 
   const exportDiagnostics = useCallback(async () => {
     setExportingDiagnostics(true);
@@ -639,18 +686,22 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         queue: diagnosticQueue,
       });
       if (!result) {
-        toast.info("Diagnostics export canceled.");
+        toast.info(t("signing_center.diagnostics_export_canceled"));
         return;
       }
       toast.success(
-        `Sanitized diagnostics exported to ${result.archivePath} (${result.queueItems} queue item(s), ${result.includedLogFiles} log file(s)).`,
+        t("signing_center.diagnostics_export_success", {
+          path: result.archivePath,
+          queueItems: result.queueItems,
+          logFiles: result.includedLogFiles,
+        }),
       );
     } catch (error) {
-      toast.error(`Failed to export diagnostics: ${String(error)}`);
+      toast.error(t("signing_center.diagnostics_export_failed", { error: formatInvokeError(error) }));
     } finally {
       setExportingDiagnostics(false);
     }
-  }, [queue]);
+  }, [queue, t]);
 
   const removeItem = useCallback((path: string) => {
     setQueue((current) => current.filter((item) => item.path !== path));
@@ -669,7 +720,12 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   }, [queue]);
 
   const stageTotals = useMemo(() => {
-    const totals: BatchSigningStageTimings = { inspectionMs: 0, signingMs: 0, packagingMs: 0, validationMs: 0 };
+    const totals: BatchSigningStageTimings = {
+      inspectionMs: 0,
+      signingMs: 0,
+      packagingMs: 0,
+      validationMs: 0,
+    };
     for (const item of lastSigningReport?.items || []) {
       totals.inspectionMs += item.stageTimings.inspectionMs;
       totals.signingMs += item.stageTimings.signingMs;
@@ -686,13 +742,11 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     <div className="signing-center">
       <div className="signing-center-header">
         <div>
-          <h2>Signing Center</h2>
-          <p className="signing-center-subtitle">
-            Preflight metadata, entitlements and signing assets; persist the queue across restarts; sign, validate and retry failures independently.
-          </p>
+          <h2>{t("signing_center.title")}</h2>
+          <p className="signing-center-subtitle">{t("signing_center.subtitle")}</p>
         </div>
         <button onClick={refreshAssets} disabled={assetBusy || busy}>
-          {assetBusy ? "Refreshing…" : "Refresh assets"}
+          {assetBusy ? t("signing_center.refreshing") : t("signing_center.refresh_assets")}
         </button>
       </div>
 
@@ -700,22 +754,26 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <section className={`signing-health-panel health-${assetHealth.overallStatus}`}>
           <div className="signing-health-header">
             <div>
-              <span className="signing-health-kicker">Signing asset health</span>
+              <span className="signing-health-kicker">{t("signing_center.asset_health")}</span>
               <div className="signing-health-title-row">
-                <strong>{healthLabel[assetHealth.overallStatus]}</strong>
+                <strong>{healthLabel(assetHealth.overallStatus)}</strong>
                 <span className={`signing-health-badge health-${assetHealth.overallStatus}`}>
-                  {assetHealth.overallStatus}
+                  {healthLabel(assetHealth.overallStatus)}
                 </span>
               </div>
             </div>
-            <small>{assetHealth.cached ? `Cached · TTL ${assetHealth.cacheTtlSeconds}s` : "Live refresh"}</small>
+            <small>
+              {assetHealth.cached
+                ? t("signing_center.cached_ttl", { seconds: assetHealth.cacheTtlSeconds })
+                : t("signing_center.live_refresh")}
+            </small>
           </div>
           <div className="signing-health-checks">
             {assetHealth.checks.map((check) => (
               <div className={`signing-health-check health-${check.status}`} key={check.code}>
                 <div className="signing-health-check-title">
                   <strong>{check.title}</strong>
-                  <span>{healthLabel[check.status]}</span>
+                  <span>{healthLabel(check.status)}</span>
                 </div>
                 <small>{check.message}</small>
               </div>
@@ -725,55 +783,127 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       )}
 
       <div className="signing-asset-grid">
-        <div className="signing-asset-card"><span>Team</span><strong>{snapshot?.teamId || assetHealth?.teamId || "—"}</strong><small>{snapshot?.email || assetHealth?.email || "Not loaded"}</small></div>
-        <div className="signing-asset-card"><span>Certificates</span><strong>{assetHealth?.certificateCount ?? snapshot?.certificates.length ?? "—"}</strong><small>Development identities</small></div>
-        <div className="signing-asset-card"><span>App IDs</span><strong>{assetHealth?.appIdCount ?? snapshot?.appIds.length ?? "—"}</strong><small>{assetHealth?.availableAppIds == null ? (snapshot?.availableAppIds == null ? "Quota unavailable" : `${snapshot.availableAppIds} slots available`) : `${assetHealth.availableAppIds} slots available`}</small></div>
-        <div className="signing-asset-card"><span>Devices</span><strong>{assetHealth?.deviceCount ?? snapshot?.devices.length ?? "—"}</strong><small>{deviceUdid ? "Current device linked to preflight" : "No target device selected"}</small></div>
+        <div className="signing-asset-card">
+          <span>{t("signing_center.team")}</span>
+          <strong>{snapshot?.teamId || assetHealth?.teamId || "—"}</strong>
+          <small>{snapshot?.email || assetHealth?.email || t("signing_center.not_loaded")}</small>
+        </div>
+        <div className="signing-asset-card">
+          <span>{t("signing_center.certificates")}</span>
+          <strong>{assetHealth?.certificateCount ?? snapshot?.certificates.length ?? "—"}</strong>
+          <small>{t("signing_center.development_identities")}</small>
+        </div>
+        <div className="signing-asset-card">
+          <span>{t("signing_center.app_ids")}</span>
+          <strong>{assetHealth?.appIdCount ?? snapshot?.appIds.length ?? "—"}</strong>
+          <small>
+            {assetHealth?.availableAppIds == null
+              ? snapshot?.availableAppIds == null
+                ? t("signing_center.quota_unavailable")
+                : t("signing_center.slots_available", { count: snapshot.availableAppIds })
+              : t("signing_center.slots_available", { count: assetHealth.availableAppIds })}
+          </small>
+        </div>
+        <div className="signing-asset-card">
+          <span>{t("signing_center.devices")}</span>
+          <strong>{assetHealth?.deviceCount ?? snapshot?.devices.length ?? "—"}</strong>
+          <small>
+            {deviceUdid
+              ? t("signing_center.current_device_linked")
+              : t("signing_center.no_target_device")}
+          </small>
+        </div>
       </div>
 
       <div className="signing-toolbar">
-        <button onClick={selectIpas} disabled={busy}>Select IPAs</button>
-        <button onClick={scanQueue} disabled={queue.length === 0 || busy}>{scanning ? "Scanning…" : "Scan & preflight"}</button>
-        <button onClick={inspectSigningBundle} disabled={busy}>{inspectingImport ? "Inspecting bundle…" : "Inspect signing bundle"}</button>
-        <button onClick={selectOutputDirectory} disabled={busy}>Choose output folder</button>
+        <button onClick={selectIpas} disabled={busy}>{t("signing_center.select_ipas")}</button>
+        <button onClick={scanQueue} disabled={queue.length === 0 || busy}>
+          {scanning ? t("signing_center.scanning") : t("signing_center.scan_preflight")}
+        </button>
+        <button onClick={inspectSigningBundle} disabled={busy}>
+          {inspectingImport
+            ? t("signing_center.inspecting_bundle")
+            : t("signing_center.inspect_bundle")}
+        </button>
+        <button onClick={selectOutputDirectory} disabled={busy}>{t("signing_center.choose_output")}</button>
         <button className="signing-primary" onClick={signReady} disabled={readyPaths.length === 0 || busy}>
-          {signing ? "Signing batch…" : `Sign ready (${readyPaths.length})`}
+          {signing
+            ? t("signing_center.signing_batch")
+            : t("signing_center.sign_ready", { count: readyPaths.length })}
         </button>
-        <button onClick={retryFailed} disabled={(summary.failed + summary.blocked === 0) || busy}>Retry failed</button>
+        <button onClick={retryFailed} disabled={(summary.failed + summary.blocked === 0) || busy}>
+          {t("signing_center.retry_failed")}
+        </button>
         <button onClick={exportDiagnostics} disabled={exportingDiagnostics || busy}>
-          {exportingDiagnostics ? "Exporting diagnostics…" : "Export diagnostics"}
+          {exportingDiagnostics
+            ? t("signing_center.exporting_diagnostics")
+            : t("signing_center.export_diagnostics")}
         </button>
-        <button onClick={clearCompleted} disabled={summary.signed === 0 || busy}>Clear completed</button>
+        <button onClick={clearCompleted} disabled={summary.signed === 0 || busy}>
+          {t("signing_center.clear_completed")}
+        </button>
       </div>
 
       {importReport && (
         <section className={`signing-health-panel health-${importReport.valid ? "healthy" : "error"}`}>
           <div className="signing-health-header">
             <div>
-              <span className="signing-health-kicker">Signing Bundle validated staging</span>
+              <span className="signing-health-kicker">{t("signing_center.import_title")}</span>
               <div className="signing-health-title-row">
-                <strong>{importReport.valid ? "Validated staging" : "Blocked"}</strong>
+                <strong>
+                  {importReport.valid
+                    ? t("signing_center.validated_staging")
+                    : t("signing_center.blocked")}
+                </strong>
                 <span className={`signing-health-badge health-${importReport.valid ? "healthy" : "error"}`}>
-                  {importReport.valid ? "staged" : "invalid"}
+                  {importReport.valid ? t("signing_center.staged") : t("signing_center.invalid")}
                 </span>
               </div>
             </div>
             <small>{fileName(importReport.archivePath)}</small>
           </div>
           <div className="signing-asset-grid">
-            <div className="signing-asset-card"><span>Source IPA</span><strong>{importReport.sourceIpa || "—"}</strong><small>Bundle metadata</small></div>
-            <div className="signing-asset-card"><span>Team</span><strong>{importReport.teamId || "—"}</strong><small>{importReport.teamId === importReport.currentTeamId ? "Matches active team" : `Active: ${importReport.currentTeamId}`}</small></div>
-            <div className="signing-asset-card"><span>Certificate</span><strong>{importReport.certificateSerialNumber || "—"}</strong><small>Serial number</small></div>
-            <div className="signing-asset-card"><span>Profiles</span><strong>{importReport.profileCount}</strong><small>{importReport.valid ? "Validated for staging only" : "Staging blocked"}</small></div>
+            <div className="signing-asset-card">
+              <span>{t("signing_center.source_ipa")}</span>
+              <strong>{importReport.sourceIpa || "—"}</strong>
+              <small>{t("signing_center.bundle_metadata")}</small>
+            </div>
+            <div className="signing-asset-card">
+              <span>{t("signing_center.team")}</span>
+              <strong>{importReport.teamId || "—"}</strong>
+              <small>
+                {importReport.teamId === importReport.currentTeamId
+                  ? t("signing_center.matches_active_team")
+                  : t("signing_center.active_team", { team: importReport.currentTeamId })}
+              </small>
+            </div>
+            <div className="signing-asset-card">
+              <span>{t("signing_center.certificate")}</span>
+              <strong>{importReport.certificateSerialNumber || "—"}</strong>
+              <small>{t("signing_center.serial_number")}</small>
+            </div>
+            <div className="signing-asset-card">
+              <span>{t("signing_center.profiles")}</span>
+              <strong>{importReport.profileCount}</strong>
+              <small>
+                {importReport.valid
+                  ? t("signing_center.validated_staging_only")
+                  : t("signing_center.staging_blocked")}
+              </small>
+            </div>
           </div>
           <div className="signing-health-checks">
             {importReport.checks.map((check) => {
-              const status: AssetHealthStatus = check.passed ? (check.severity === "warning" ? "warning" : "healthy") : "error";
+              const status: AssetHealthStatus = check.passed
+                ? check.severity === "warning"
+                  ? "warning"
+                  : "healthy"
+                : "error";
               return (
                 <div className={`signing-health-check health-${status}`} key={check.code}>
                   <div className="signing-health-check-title">
                     <strong>{check.code}</strong>
-                    <span>{check.passed ? "Passed" : "Blocked"}</span>
+                    <span>{check.passed ? t("signing_center.passed") : t("signing_center.blocked")}</span>
                   </div>
                   <small>{check.message}</small>
                 </div>
@@ -782,8 +912,8 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
           </div>
           <div className="signing-note">
             {importReport.valid
-              ? "Integrity, team and profile checks passed. The bundle is validated staging only: no private key or PKCS#12 password is persisted, and the current signing engine does not activate imported credentials."
-              : "The bundle cannot enter validated staging until every blocking import check passes."}
+              ? t("signing_center.import_valid_note")
+              : t("signing_center.import_blocked_note")}
           </div>
         </section>
       )}
@@ -792,50 +922,93 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <section className={`signing-health-panel health-${lastSigningReport.failed === 0 ? "healthy" : "warning"}`}>
           <div className="signing-health-header">
             <div>
-              <span className="signing-health-kicker">Latest signing performance</span>
+              <span className="signing-health-kicker">{t("signing_center.latest_performance")}</span>
               <div className="signing-health-title-row">
                 <strong>{formatDuration(lastSigningReport.batchDurationMs)}</strong>
                 <span className={`signing-health-badge health-${lastSigningReport.failed === 0 ? "healthy" : "warning"}`}>
-                  {lastSigningReport.signed}/{lastSigningReport.total} signed
+                  {t("signing_center.signed", { count: lastSigningReport.signed })} / {lastSigningReport.total}
                 </span>
               </div>
             </div>
-            <small>{lastSigningReport.reportPath ? fileName(lastSigningReport.reportPath) : "Report unavailable"}</small>
+            <small>
+              {lastSigningReport.reportPath
+                ? fileName(lastSigningReport.reportPath)
+                : t("signing_center.report_unavailable")}
+            </small>
           </div>
           <div className="signing-health-checks">
-            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Inspection</strong><span>{formatDuration(stageTotals.inspectionMs)}</span></div><small>IPA structure and metadata loading</small></div>
-            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Signing</strong><span>{formatDuration(stageTotals.signingMs)}</span></div><small>Apple assets, bundle mutation and code signing</small></div>
-            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Packaging</strong><span>{formatDuration(stageTotals.packagingMs)}</span></div><small>Payload ZIP creation and atomic publication</small></div>
-            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Validation</strong><span>{formatDuration(stageTotals.validationMs)}</span></div><small>Signed IPA structural validation</small></div>
+            <div className="signing-health-check health-healthy">
+              <div className="signing-health-check-title">
+                <strong>{t("signing_center.inspection")}</strong>
+                <span>{formatDuration(stageTotals.inspectionMs)}</span>
+              </div>
+              <small>{t("signing_center.inspection_desc")}</small>
+            </div>
+            <div className="signing-health-check health-healthy">
+              <div className="signing-health-check-title">
+                <strong>{t("signing_center.signing")}</strong>
+                <span>{formatDuration(stageTotals.signingMs)}</span>
+              </div>
+              <small>{t("signing_center.signing_desc")}</small>
+            </div>
+            <div className="signing-health-check health-healthy">
+              <div className="signing-health-check-title">
+                <strong>{t("signing_center.packaging")}</strong>
+                <span>{formatDuration(stageTotals.packagingMs)}</span>
+              </div>
+              <small>{t("signing_center.packaging_desc")}</small>
+            </div>
+            <div className="signing-health-check health-healthy">
+              <div className="signing-health-check-title">
+                <strong>{t("signing_center.validation")}</strong>
+                <span>{formatDuration(stageTotals.validationMs)}</span>
+              </div>
+              <small>{t("signing_center.validation_desc")}</small>
+            </div>
           </div>
-          {lastSigningReport.reportPath && <div className="signing-result-path">Signing report: {lastSigningReport.reportPath}</div>}
-          {lastSigningReport.reportError && <div className="signing-checks signing-checks-warning">{lastSigningReport.reportError}</div>}
+          {lastSigningReport.reportPath && (
+            <div className="signing-result-path">
+              {t("signing_center.signing_report", { path: lastSigningReport.reportPath })}
+            </div>
+          )}
+          {lastSigningReport.reportError && (
+            <div className="signing-checks signing-checks-warning">{lastSigningReport.reportError}</div>
+          )}
         </section>
       )}
 
       <div className="signing-output-path" title={outputDirectory}>
-        <span>Output</span><strong>{outputDirectory || "Choose a destination for signed IPA files"}</strong>
+        <span>{t("signing_center.output")}</span>
+        <strong>{outputDirectory || t("signing_center.choose_destination")}</strong>
       </div>
 
       <div className="signing-summary">
-        <span>{queue.length} total</span><span>{summary.ready} ready</span><span>{summary.blocked} blocked</span><span>{summary.signed} signed</span><span>{summary.failed} failed</span>
+        <span>{t("signing_center.total", { count: queue.length })}</span>
+        <span>{t("signing_center.ready", { count: summary.ready })}</span>
+        <span>{t("signing_center.blocked_count", { count: summary.blocked })}</span>
+        <span>{t("signing_center.signed", { count: summary.signed })}</span>
+        <span>{t("signing_center.failed", { count: summary.failed })}</span>
       </div>
 
       {queue.length === 0 ? (
-        <div className="signing-empty">
-          Select multiple IPA files to build a persistent signing queue. Interrupted work is restored on the next launch, but unsigned items must pass a fresh preflight before signing.
-        </div>
+        <div className="signing-empty">{t("signing_center.empty")}</div>
       ) : (
         <div className="signing-queue">
           {queue.map((item) => {
             const main = item.report?.inspection.main;
-            const blockingChecks = item.report?.checks.filter((check) => check.severity === "error" && !check.passed);
+            const blockingChecks = item.report?.checks.filter(
+              (check) => check.severity === "error" && !check.passed,
+            );
             const warnings = item.report?.checks.filter((check) => check.severity === "warning");
             const entitlementBlocking = item.report?.entitlements.bundles.flatMap((bundle) =>
-              bundle.items.filter((entry) => entry.severity === "error").map((entry) => `${bundle.name}: ${entry.message}`),
+              bundle.items
+                .filter((entry) => entry.severity === "error")
+                .map((entry) => `${bundle.name}: ${entry.message}`),
             );
             const entitlementWarnings = item.report?.entitlements.bundles.flatMap((bundle) =>
-              bundle.items.filter((entry) => entry.severity === "warning").map((entry) => `${bundle.name}: ${entry.message}`),
+              bundle.items
+                .filter((entry) => entry.severity === "warning")
+                .map((entry) => `${bundle.name}: ${entry.message}`),
             );
             const canExportBundle = item.stage === "signed";
 
@@ -845,55 +1018,106 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                   <div className="signing-file-meta">
                     <strong>{main?.name || fileName(item.path)}</strong>
                     <span>{main?.bundleIdentifier || item.path}</span>
-                    {main?.signingBundleIdentifier && main.signingBundleIdentifier !== main.bundleIdentifier && (
-                      <small>Signing ID: {main.signingBundleIdentifier}</small>
-                    )}
+                    {main?.signingBundleIdentifier &&
+                      main.signingBundleIdentifier !== main.bundleIdentifier && (
+                        <small>
+                          {t("signing_center.signing_id", { id: main.signingBundleIdentifier })}
+                        </small>
+                      )}
                   </div>
                   <div className="signing-row-actions">
-                    <span className={`signing-status status-${item.stage}`}>{stageLabel[item.stage]}</span>
+                    <span className={`signing-status status-${item.stage}`}>{stageLabel(item.stage)}</span>
                     {!busy && canExportBundle && (
-                      <button onClick={() => exportSigningBundle(item.path)} disabled={exportingBundlePath !== null} title="Export P12, provisioning profiles, metadata and SHA-256 checksums">
-                        {exportingBundlePath === item.path ? "Exporting…" : "Export bundle"}
+                      <button
+                        onClick={() => exportSigningBundle(item.path)}
+                        disabled={exportingBundlePath !== null}
+                        title={t("signing_center.export_bundle_title")}
+                      >
+                        {exportingBundlePath === item.path
+                          ? t("signing_center.exporting")
+                          : t("signing_center.export_bundle")}
                       </button>
                     )}
-                    {!busy && <button className="signing-remove" onClick={() => removeItem(item.path)}>Remove</button>}
+                    {!busy && (
+                      <button className="signing-remove" onClick={() => removeItem(item.path)}>
+                        {t("signing_center.remove")}
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 {main?.appIdMatch && (
                   <div className="signing-profile-line">
-                    <span>Profile</span><strong>{main.appIdMatch.profileName || main.appIdMatch.name}</strong><span>{main.appIdMatch.profileStatus || "Pending"}</span>
+                    <span>{t("signing_center.profile")}</span>
+                    <strong>{main.appIdMatch.profileName || main.appIdMatch.name}</strong>
+                    <span>{main.appIdMatch.profileStatus || t("signing_center.pending")}</span>
                   </div>
                 )}
 
                 {item.report?.entitlements && (
                   <div className="signing-profile-line">
-                    <span>Entitlements</span><strong>{item.report.entitlements.blockingCount} blocking</strong><span>{item.report.entitlements.warningCount} warning(s)</span>
+                    <span>{t("signing_center.entitlements")}</span>
+                    <strong>
+                      {t("signing_center.blocking", {
+                        count: item.report.entitlements.blockingCount,
+                      })}
+                    </strong>
+                    <span>
+                      {t("signing_center.warnings", {
+                        count: item.report.entitlements.warningCount,
+                      })}
+                    </span>
                   </div>
                 )}
 
                 {(item.report?.inspection.requiresRegistrationBundleIds.length || 0) > 0 && (
-                  <div className="signing-note">App IDs to register automatically: {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}</div>
+                  <div className="signing-note">
+                    {t("signing_center.auto_register_app_ids", {
+                      ids: item.report?.inspection.requiresRegistrationBundleIds.join(", "),
+                    })}
+                  </div>
                 )}
                 {(blockingChecks?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-error">{blockingChecks?.map((check) => <div key={check.code}>{check.message}</div>)}</div>
+                  <div className="signing-checks signing-checks-error">
+                    {blockingChecks?.map((check) => <div key={check.code}>{check.message}</div>)}
+                  </div>
                 )}
                 {(entitlementBlocking?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-error">{entitlementBlocking?.map((message, index) => <div key={`entitlement-error-${index}`}>{message}</div>)}</div>
+                  <div className="signing-checks signing-checks-error">
+                    {entitlementBlocking?.map((message, index) => (
+                      <div key={`entitlement-error-${index}`}>{message}</div>
+                    ))}
+                  </div>
                 )}
                 {(warnings?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-warning">{warnings?.map((check) => <div key={check.code}>{check.message}</div>)}</div>
+                  <div className="signing-checks signing-checks-warning">
+                    {warnings?.map((check) => <div key={check.code}>{check.message}</div>)}
+                  </div>
                 )}
                 {(entitlementWarnings?.length || 0) > 0 && (
-                  <div className="signing-checks signing-checks-warning">{entitlementWarnings?.map((message, index) => <div key={`entitlement-warning-${index}`}>{message}</div>)}</div>
+                  <div className="signing-checks signing-checks-warning">
+                    {entitlementWarnings?.map((message, index) => (
+                      <div key={`entitlement-warning-${index}`}>{message}</div>
+                    ))}
+                  </div>
                 )}
 
                 {item.validation && (
                   <div className="signing-note">
-                    Signed IPA validation: {item.validation.valid ? "passed" : "failed"}; extensions {item.validation.extensionProfiles}/{item.validation.extensionCount} profiled.
+                    {t("signing_center.validation_result", {
+                      result: item.validation.valid
+                        ? t("signing_center.validation_passed")
+                        : t("signing_center.validation_failed"),
+                      profiled: item.validation.extensionProfiles,
+                      total: item.validation.extensionCount,
+                    })}
                   </div>
                 )}
-                {item.outputPath && <div className="signing-result-path">Signed IPA: {item.outputPath}</div>}
+                {item.outputPath && (
+                  <div className="signing-result-path">
+                    {t("signing_center.signed_ipa", { path: item.outputPath })}
+                  </div>
+                )}
                 {item.error && <div className="signing-checks signing-checks-error">{item.error}</div>}
               </article>
             );
