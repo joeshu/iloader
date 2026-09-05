@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{atomic::{AtomicBool, Ordering}, Condvar, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use crate::{
     device::{DeviceInfoMutex, get_provider, get_provider_from_connection, get_usbmuxd},
@@ -11,19 +15,60 @@ use tauri::{AppHandle, Manager, State, Window};
 
 pub type SideloaderMutex = Mutex<Option<Sideloader>>;
 
+const SESSION_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+static SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SESSION_WAIT: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
+
+fn session_wait() -> &'static (Mutex<()>, Condvar) {
+    SESSION_WAIT.get_or_init(|| (Mutex::new(()), Condvar::new()))
+}
+
 pub struct SideloaderGuard<'a> {
     state: &'a SideloaderMutex,
     sideloader: Option<Sideloader>,
 }
 
 impl<'a> SideloaderGuard<'a> {
+    /// Acquire exclusive access to the single Apple developer session.
+    ///
+    /// Historically `take()` treated a temporarily-empty `Option` as logout.
+    /// That made concurrent Signing Center reads randomly fail with
+    /// `NotLoggedIn`. We now serialize contenders here, so every command using
+    /// SideloaderGuard shares one central scheduler instead of reimplementing
+    /// retries in individual commands.
     pub fn take(state: &'a SideloaderMutex) -> Result<Self, AppError> {
-        let mut guard = state.lock().unwrap();
-        let sideloader = guard.take().ok_or(AppError::NotLoggedIn)?;
-        Ok(Self {
-            state,
-            sideloader: Some(sideloader),
-        })
+        let (wait_lock, wait_condvar) = session_wait();
+        let mut waiter = wait_lock.lock().unwrap();
+        let started = Instant::now();
+
+        loop {
+            let mut guard = state.lock().unwrap();
+            if let Some(sideloader) = guard.take() {
+                SESSION_ACTIVE.store(true, Ordering::Release);
+                drop(guard);
+                drop(waiter);
+                return Ok(Self {
+                    state,
+                    sideloader: Some(sideloader),
+                });
+            }
+
+            if !SESSION_ACTIVE.load(Ordering::Acquire) {
+                return Err(AppError::NotLoggedIn);
+            }
+            drop(guard);
+
+            let elapsed = started.elapsed();
+            if elapsed >= SESSION_WAIT_TIMEOUT {
+                return Err(AppError::SessionBusy);
+            }
+            let remaining = SESSION_WAIT_TIMEOUT - elapsed;
+            let (next_waiter, timeout) = wait_condvar.wait_timeout(waiter, remaining).unwrap();
+            waiter = next_waiter;
+            if timeout.timed_out() {
+                return Err(AppError::SessionBusy);
+            }
+        }
     }
 
     pub fn get_mut(&mut self) -> &mut Sideloader {
@@ -37,6 +82,10 @@ impl Drop for SideloaderGuard<'_> {
     fn drop(&mut self) {
         let mut guard = self.state.lock().unwrap();
         *guard = self.sideloader.take();
+        SESSION_ACTIVE.store(false, Ordering::Release);
+        drop(guard);
+        let (_, wait_condvar) = session_wait();
+        wait_condvar.notify_all();
     }
 }
 
