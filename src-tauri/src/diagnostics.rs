@@ -75,8 +75,20 @@ fn basename(path: &str) -> String {
         .to_string()
 }
 
+fn looks_like_path_fragment(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';'));
+    trimmed.starts_with('/')
+        || trimmed.starts_with("file://")
+        || trimmed.as_bytes().get(1) == Some(&b':') && trimmed.contains('\\')
+}
+
 fn sanitize_error(value: &str) -> String {
-    let mut result = value.replace('\r', " ").replace('\n', " ");
+    let flattened = value.replace('\r', " ").replace('\n', " ");
+    let mut result = flattened
+        .split_whitespace()
+        .map(|token| if looks_like_path_fragment(token) { "[PATH]" } else { token })
+        .collect::<Vec<_>>()
+        .join(" ");
     if result.len() > 4_096 {
         result.truncate(4_096);
         result.push_str("…");
@@ -281,4 +293,26 @@ pub async fn export_signing_diagnostics(
         included_log_files: logs.len(),
         queue_items: queue.len(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_sensitive_line, sanitize_error, sanitize_log};
+
+    #[test]
+    fn redacts_credential_bearing_log_lines() {
+        let input = b"normal line\nAuthorization: Bearer secret\nnext line";
+        let sanitized = sanitize_log(input);
+        assert!(sanitized.contains("normal line"));
+        assert!(sanitized.contains("[REDACTED SENSITIVE LINE]"));
+        assert!(!sanitized.contains("secret"));
+        assert!(is_sensitive_line("p12 password: abc"));
+    }
+
+    #[test]
+    fn removes_path_fragments_from_errors() {
+        let sanitized = sanitize_error("failed C:\\Users\\alice\\secret.ipa at /Users/alice/temp/file");
+        assert!(!sanitized.contains("alice"));
+        assert_eq!(sanitized, "failed [PATH] at [PATH]");
+    }
 }
