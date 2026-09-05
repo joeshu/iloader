@@ -1,0 +1,65 @@
+{
+  "error": {
+    "retryable_hint": "This error can be retried.",
+    "actions": {
+      "sign_in": "Sign in to your Apple ID again.",
+      "retry": "Retry the current operation shortly.",
+      "select_device": "Select a target device and try again.",
+      "manage_app_ids": "Review or free App ID capacity.",
+      "remove_installed_apps": "Remove some sideloaded apps and try again.",
+      "reauthenticate": "Re-authenticate your Apple ID session.",
+      "reconnect_device": "Reconnect the device and confirm that this computer is trusted.",
+      "retry_anisette": "Check the Anisette service and retry.",
+      "check_secure_storage": "Check the system credential/keyring storage.",
+      "review_details": "Review the error details and suggested action."
+    },
+    "suggestions": {
+      "session_busy": [
+        "The signing session is currently used by another operation. Wait briefly and retry.",
+        "If it remains busy for more than 30 seconds, stop any active signing, certificate or App ID operation and try again."
+      ]
+    }
+  },
+  "signing_center": {
+    "title": "Signing Center",
+    "subtitle": "Preflight app metadata, entitlements and signing assets; persist the signing queue, validate signatures and retry failures.",
+    "refresh_assets": "Refresh assets",
+    "refreshing": "Refreshing…",
+    "asset_health": "Signing asset health",
+    "healthy": "Healthy",
+    "attention": "Attention",
+    "blocked": "Blocked",
+    "team": "Team",
+    "certificates": "Certificates",
+    "development_identities": "Development identities",
+    "app_ids": "App IDs",
+    "devices": "Devices",
+    "not_loaded": "Not loaded",
+    "quota_unavailable": "Quota unavailable",
+    "slots_available": "{{count}} slots available",
+    "current_device_linked": "Current device linked to preflight",
+    "no_target_device": "No target device selected",
+    "select_ipas": "Select IPAs",
+    "scan_preflight": "Scan & preflight",
+    "scanning": "Scanning…",
+    "inspect_bundle": "Inspect signing bundle",
+    "inspecting_bundle": "Inspecting bundle…",
+    "choose_output": "Choose output folder",
+    "sign_ready": "Sign ready ({{count}})",
+    "signing_batch": "Signing batch…",
+    "retry_failed": "Retry failed",
+    "export_diagnostics": "Export diagnostics",
+    "exporting_diagnostics": "Exporting diagnostics…",
+    "clear_completed": "Clear completed",
+    "output": "Output",
+    "choose_destination": "Choose a destination for signed IPA files",
+    "total": "{{count}} total",
+    "ready": "{{count}} ready",
+    "failed": "{{count}} failed",
+    "signed": "{{count}} signed",
+    "empty": "Select multiple IPA files to build a persistent signing queue. Interrupted work is restored on the next launch, but unsigned items must pass a fresh preflight before signing.",
+    "load_failed": "Failed to load Signing Center",
+    "asset_health_failed": "Failed to load signing asset health",
+    "session_busy": "The signing session is temporarily busy. Please retry shortly."
+  }
+}
