@@ -112,9 +112,7 @@ fn safe_archive_path(path: &str) -> bool {
     }
     let parsed = Path::new(path);
     !parsed.is_absolute()
-        && parsed.components().all(|component| {
-            matches!(component, Component::Normal(_))
-        })
+        && parsed.components().all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn read_entry(
@@ -206,7 +204,8 @@ pub async fn inspect_signing_bundle_import(
             .by_index(index)
             .map_err(|error| AppError::Misc(format!("Failed to inspect ZIP entry: {error}")))?;
         let name = entry.name().to_string();
-        if !safe_archive_path(name.trim_end_matches('/')) && !name.ends_with('/') {
+        let normalized = name.trim_end_matches('/');
+        if normalized.is_empty() || !safe_archive_path(normalized) {
             return Err(AppError::Misc(format!("Unsafe ZIP entry path: {name}")));
         }
         if !seen_names.insert(name.clone()) {
@@ -278,6 +277,16 @@ pub async fn inspect_signing_bundle_import(
             format!("development.p12 is present ({} bytes).", p12_bytes.len())
         },
     ));
+    checks.push(check(
+        "metadata.identity",
+        SigningBundleImportSeverity::Warning,
+        !metadata.machine_id.is_empty() && !metadata.machine_name.is_empty(),
+        if metadata.machine_id.is_empty() || metadata.machine_name.is_empty() {
+            "Signing identity machine metadata is incomplete.".into()
+        } else {
+            format!("Signing identity metadata names machine {}.", metadata.machine_name)
+        },
+    ));
 
     let required_checksum_paths = std::iter::once("development.p12".to_string())
         .chain(std::iter::once("metadata.json".to_string()))
@@ -307,7 +316,7 @@ pub async fn inspect_signing_bundle_import(
         let valid = expected.is_some_and(|digest| digest == &actual);
         all_checksums_valid &= valid;
         checks.push(check(
-            format!("checksum.{entry_path}").as_str(),
+            &format!("checksum.{entry_path}"),
             SigningBundleImportSeverity::Error,
             valid,
             if valid {
@@ -350,7 +359,7 @@ pub async fn inspect_signing_bundle_import(
             .unwrap_or(true);
         profile_validation_ok &= application_identifier_matches && team_matches;
         checks.push(check(
-            format!("profile.{}", profile_meta.archive_path).as_str(),
+            &format!("profile.{}", profile_meta.archive_path),
             SigningBundleImportSeverity::Error,
             application_identifier_matches && team_matches,
             if application_identifier_matches && team_matches {
