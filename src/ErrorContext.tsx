@@ -52,7 +52,6 @@ export const ErrorProvider: React.FC<{ children: React.ReactNode }> = ({
       return;
     }
     setSuggestions(getSuggestions(error.type));
-    // a little bit gross but it gets the job done.
     let lines =
       error?.message.split("\n").filter((line) => line.includes("●")) ?? [];
     if (lines.length > 0) {
@@ -98,6 +97,16 @@ export const ErrorProvider: React.FC<{ children: React.ReactNode }> = ({
               {t("common.copy_to_clipboard")}
             </button>
           </div>
+          {error?.retryable && (
+            <p className="error-retryable">{t("error.retryable_hint")}</p>
+          )}
+          {error?.suggestedAction && error.suggestedAction !== "none" && (
+            <p className="error-action-hint">
+              {t(`error.actions.${error.suggestedAction}`, {
+                defaultValue: t("error.actions.review_details"),
+              })}
+            </p>
+          )}
           {simpleError && <pre className="error-inner">{simpleError}</pre>}
           {simpleError && (
             <p
@@ -167,7 +176,7 @@ export const ErrorProvider: React.FC<{ children: React.ReactNode }> = ({
                     github: (
                       <span
                         onClick={() =>
-                          openUrl("https://github.com/nab138/iloader/issues")
+                          openUrl("https://github.com/joeshu/iloader/issues")
                         }
                         role="link"
                         className="error-link"
