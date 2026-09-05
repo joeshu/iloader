@@ -26,6 +26,7 @@ export const errorSuggestionKeys = {
     "error.suggestions.trust",
   ],
   not_logged_in: ["error.suggestions.not_logged_in"],
+  session_busy: ["error.suggestions.session_busy"],
   no_device_selected: ["error.suggestions.no_device_selected"],
   anisette: ["error.suggestions.anisette"],
   keyring: ["error.suggestions.keyring", "error.suggestions.admin"],
@@ -49,6 +50,8 @@ export type ErrorVariant = keyof typeof errorSuggestionKeys;
 export type AppError = {
   type: ErrorVariant;
   message: string;
+  retryable?: boolean;
+  suggestedAction?: string;
 };
 
 export const isErrorVariant = (value: string): value is ErrorVariant => {
@@ -91,12 +94,6 @@ const getSuggestionBlock = (
         const platformEnd = suggestion.indexOf("]");
         if (platformEnd !== -1) {
           const suggestionPlatform = suggestion.substring(11, platformEnd);
-          console.log(
-            "suggestion platform:",
-            suggestionPlatform,
-            "current platform:",
-            platform,
-          );
           if (suggestionPlatform === platform) {
             return true;
           }
@@ -108,7 +105,6 @@ const getSuggestionBlock = (
     .map((s) =>
       s
         .replace(/^\[platform::.*?\]/, "")
-        // TODO: actually check ios version
         .replace(/\[ios::.*?\]/g, "")
         .trim(),
     );

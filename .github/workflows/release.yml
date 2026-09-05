@@ -1,0 +1,88 @@
+name: Release iloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (for example Tagv7)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "Tagv*"
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $cargo = Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $tauri = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $version = [string]$package.version
+          if ($cargo.Matches.Count -eq 0) { throw "Cargo.toml package version not found" }
+          $cargoVersion = $cargo.Matches[0].Groups[1].Value
+          if ($cargoVersion -ne $version -or [string]$tauri.version -ne $version) {
+            throw "Version mismatch: package=$version cargo=$cargoVersion tauri=$($tauri.version)"
+          }
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) { throw "Release tag is empty" }
+          "ILOADER_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ILOADER_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Run Rust regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Disable updater artifacts when updater signing secrets are unavailable
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
+
+      - name: Build Windows installers
+        run: npm run tauri build
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "src-tauri/target/release/bundle" -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $files) { throw "No Windows installer files found" }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Path "SHA256SUMS.txt" -Encoding ascii
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.ILOADER_TAG }}
+          name: ${{ env.ILOADER_TAG }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
+            ${{ github.workspace }}/SHA256SUMS.txt
+          fail_on_unmatched_files: true

@@ -18,7 +18,7 @@ const languages = [
   ["ar", "العربية"],
   ["tr", "Türkçe"],
   ["zh_tw", "Traditional Chinese （繁體中文)"],
-  ["zh_cn", "Simpified Chinese （简体中文)"],
+  ["zh_cn", "Simplified Chinese （简体中文)"],
   ["ko", "한국어"],
   ["zh_hk", "Cantonese （粵語)"],
   ["ja", "日本語"],
@@ -43,13 +43,40 @@ const localeModules = import.meta.glob<{ default: TranslationResource }>(
   },
 );
 
-const resources = Object.fromEntries(
-  Object.entries(localeModules).flatMap(([path, module]) => {
-    const lang = path.match(/\/([\w-]+)\.json$/)?.[1];
-    if (!lang) return [];
+const isRecord = (value: unknown): value is TranslationResource =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
-    return [[lang, { translation: module.default }]];
-  }),
+const deepMerge = (
+  target: TranslationResource,
+  source: TranslationResource,
+): TranslationResource => {
+  const merged: TranslationResource = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    if (isRecord(value) && isRecord(merged[key])) {
+      merged[key] = deepMerge(merged[key] as TranslationResource, value);
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
+};
+
+const translationsByLanguage: Record<string, TranslationResource> = {};
+for (const [path, module] of Object.entries(localeModules)) {
+  const fileName = path.split("/").pop()?.replace(/\.json$/, "");
+  if (!fileName) continue;
+  const lang = fileName.split(".")[0];
+  translationsByLanguage[lang] = deepMerge(
+    translationsByLanguage[lang] || {},
+    module.default,
+  );
+}
+
+const resources = Object.fromEntries(
+  Object.entries(translationsByLanguage).map(([lang, translation]) => [
+    lang,
+    { translation },
+  ]),
 );
 
 i18n
