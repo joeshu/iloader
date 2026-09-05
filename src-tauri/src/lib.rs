@@ -9,6 +9,7 @@ mod pairing;
 #[macro_use]
 mod secure_storage;
 mod batch_signing;
+mod diagnostics;
 mod entitlement_compatibility;
 mod error;
 mod ipa_inspection;
@@ -25,6 +26,7 @@ use crate::{
         revoke_certificate,
     },
     batch_signing::batch_sign_ipas,
+    diagnostics::export_signing_diagnostics,
     device::{
         DeviceInfoMutex, PairingCancelToken, cancel_pairing, list_devices, set_selected_device,
     },
@@ -132,6 +134,7 @@ pub fn run() {
             delete_app_id,
             export_signing_bundle,
             export_ipa_signing_bundle,
+            export_signing_diagnostics,
             get_signing_center_snapshot,
             preflight_signing,
             inspect_ipa_and_match_profiles,
