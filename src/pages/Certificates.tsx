@@ -56,7 +56,7 @@ type CompleteSigningBundleExportInfo = {
 const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
 
 export const Certificates = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [appIds, setAppIds] = useState<AppId[]>([]);
   const [selectedAppId, setSelectedAppId] = useState("");
@@ -66,6 +66,8 @@ export const Certificates = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const loadingRef = useRef<boolean>(false);
   const { err } = useError();
+  const zh = i18n.resolvedLanguage === "zh_cn" || i18n.language === "zh_cn";
+  const text = useCallback((cn: string, en: string) => (zh ? cn : en), [zh]);
 
   const loadCertificates = useCallback(async () => {
     if (loadingRef.current) return;
@@ -73,10 +75,11 @@ export const Certificates = () => {
       loadingRef.current = true;
       setLoading(true);
       try {
-        const [certs, apps] = await Promise.all([
-          invoke<Certificate[]>("get_certificates"),
-          invoke<AppIdsResponse>("list_app_ids"),
-        ]);
+        // SideloaderGuard::take() temporarily removes the single Sideloader from
+        // shared state. These calls therefore must be serialized; Promise.all
+        // makes the second request observe None and incorrectly report NotLoggedIn.
+        const certs = await invoke<Certificate[]>("get_certificates");
+        const apps = await invoke<AppIdsResponse>("list_app_ids");
         setCertificates(certs);
         setAppIds(apps.appIds);
         setSelectedAppId((current) => current || apps.appIds[0]?.appIdId || "");
@@ -109,7 +112,7 @@ export const Certificates = () => {
 
   const exportBundle = useCallback(async () => {
     if (!selectedAppId) {
-      toast.warning("Choose an App ID before exporting.");
+      toast.warning(text("请先选择一个 App ID。", "Choose an App ID before exporting."));
       return;
     }
 
@@ -119,14 +122,17 @@ export const Certificates = () => {
     });
 
     toast.promise(promise, {
-      loading: "Exporting signing bundle…",
+      loading: text("正在导出签名包…", "Exporting signing bundle…"),
       success: (result) =>
         result
-          ? `Exported to ${result.directory}. P12 password: ${result.p12Password}`
-          : "Export canceled",
-      error: (e) => err("Failed to export signing bundle", e),
+          ? text(
+              `已导出到 ${result.directory}。P12 密码：${result.p12Password}`,
+              `Exported to ${result.directory}. P12 password: ${result.p12Password}`,
+            )
+          : text("已取消导出", "Export canceled"),
+      error: (e) => err(text("导出签名包失败", "Failed to export signing bundle"), e),
     });
-  }, [selectedAppId, password, err]);
+  }, [selectedAppId, password, err, text]);
 
   const chooseCompleteBundleIpa = useCallback(async () => {
     const selected = await openFileDialog({
@@ -140,7 +146,7 @@ export const Certificates = () => {
 
   const exportCompleteBundle = useCallback(async () => {
     if (!completeBundleIpa) {
-      toast.warning("Choose an IPA before exporting the complete signing bundle.");
+      toast.warning(text("请先选择一个 IPA。", "Choose an IPA before exporting the complete signing bundle."));
       return;
     }
 
@@ -154,18 +160,26 @@ export const Certificates = () => {
         },
       );
       if (!result) {
-        toast.info("Export canceled");
+        toast.info(text("已取消导出", "Export canceled"));
         return;
       }
       toast.success(
-        `Exported ${result.profiles.length} provisioning profile(s) to ${result.archivePath}. P12 password: ${result.p12Password}`,
+        text(
+          `已将 ${result.profiles.length} 个描述文件导出到 ${result.archivePath}。P12 密码：${result.p12Password}`,
+          `Exported ${result.profiles.length} provisioning profile(s) to ${result.archivePath}. P12 password: ${result.p12Password}`,
+        ),
       );
     } catch (e) {
-      toast.error(err("Failed to export complete signing bundle", e as AppError));
+      toast.error(
+        err(
+          text("导出完整签名包失败", "Failed to export complete signing bundle"),
+          e as AppError,
+        ),
+      );
     } finally {
       setExportingCompleteBundle(false);
     }
-  }, [completeBundleIpa, password, err]);
+  }, [completeBundleIpa, password, err, text]);
 
   useEffect(() => {
     loadCertificates();
@@ -218,17 +232,19 @@ export const Certificates = () => {
         </div>
       )}
       <div className="card" style={{ marginTop: "1em", padding: "1em" }}>
-        <h3 style={{ marginTop: 0 }}>Export signing bundle</h3>
+        <h3 style={{ marginTop: 0 }}>{text("导出签名包", "Export signing bundle")}</h3>
         <p className="settings-hint">
-          Exports development.p12, development.mobileprovision and certificate.json.
-          Provisioning profiles are App-ID specific.
+          {text(
+            "导出 development.p12、development.mobileprovision 和 certificate.json。描述文件与 App ID 对应。",
+            "Exports development.p12, development.mobileprovision and certificate.json. Provisioning profiles are App-ID specific.",
+          )}
         </p>
         <select
           value={selectedAppId}
           onChange={(e) => setSelectedAppId(e.target.value)}
           style={{ width: "100%", marginBottom: "0.75em" }}
         >
-          <option value="">Choose App ID</option>
+          <option value="">{text("选择 App ID", "Choose App ID")}</option>
           {appIds.map((app) => (
             <option key={app.appIdId} value={app.appIdId}>
               {app.name} — {app.identifier}
@@ -239,34 +255,37 @@ export const Certificates = () => {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="P12 password (blank = certificate Machine ID)"
+          placeholder={text("P12 密码（留空则使用证书 Machine ID）", "P12 password (blank = certificate Machine ID)")}
           style={{ width: "100%", boxSizing: "border-box", marginBottom: "0.75em" }}
         />
         <button style={{ width: "100%" }} onClick={exportBundle} disabled={!selectedAppId}>
-          Export P12 + mobileprovision
+          {text("导出 P12 + mobileprovision", "Export P12 + mobileprovision")}
         </button>
       </div>
 
       <div className="card" style={{ marginTop: "1em", padding: "1em" }}>
-        <h3 style={{ marginTop: 0 }}>Export complete IPA signing bundle</h3>
+        <h3 style={{ marginTop: 0 }}>{text("导出完整 IPA 签名包", "Export complete IPA signing bundle")}</h3>
         <p className="settings-hint">
-          Creates one ZIP containing the P12 identity, the main provisioning profile, every
-          extension provisioning profile, metadata.json and SHA-256 checksums. The P12 password
-          is returned after export and is never written into the ZIP.
+          {text(
+            "生成一个 ZIP，包含 P12 身份、主描述文件、全部扩展描述文件、metadata.json 和 SHA-256 校验值。P12 密码只在导出后显示，不写入 ZIP。",
+            "Creates one ZIP containing the P12 identity, the main provisioning profile, every extension provisioning profile, metadata.json and SHA-256 checksums. The P12 password is returned after export and is never written into the ZIP.",
+          )}
         </p>
         <button
           style={{ width: "100%", marginBottom: "0.75em" }}
           onClick={chooseCompleteBundleIpa}
           disabled={exportingCompleteBundle}
         >
-          {completeBundleIpa ? `IPA: ${fileName(completeBundleIpa)}` : "Choose IPA"}
+          {completeBundleIpa ? `IPA: ${fileName(completeBundleIpa)}` : text("选择 IPA", "Choose IPA")}
         </button>
         <button
           style={{ width: "100%" }}
           onClick={exportCompleteBundle}
           disabled={!completeBundleIpa || exportingCompleteBundle}
         >
-          {exportingCompleteBundle ? "Exporting complete bundle…" : "Export complete signing bundle ZIP"}
+          {exportingCompleteBundle
+            ? text("正在导出完整签名包…", "Exporting complete bundle…")
+            : text("导出完整签名包 ZIP", "Export complete signing bundle ZIP")}
         </button>
       </div>
 
