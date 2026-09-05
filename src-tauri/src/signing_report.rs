@@ -9,7 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    batch_signing::{BatchSigningItemResult, BatchSigningStatus},
+    batch_signing::{BatchSigningItemResult, BatchSigningStageTimings, BatchSigningStatus},
     error::AppError,
 };
 
@@ -23,10 +23,20 @@ struct SigningReportItem {
     output_file: Option<String>,
     output_sha256: Option<String>,
     duration_ms: u64,
+    stage_timings: BatchSigningStageTimings,
     validation_passed: Option<bool>,
     extension_count: Option<usize>,
     extension_profiles: Option<usize>,
     error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SigningReportStageTotals {
+    inspection_ms: u64,
+    signing_ms: u64,
+    packaging_ms: u64,
+    validation_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,12 +49,15 @@ struct SigningReportDocument {
     signed: usize,
     failed: usize,
     batch_duration_ms: u64,
+    stage_totals: SigningReportStageTotals,
     items: Vec<SigningReportItem>,
 }
 
 fn basename(path: &str) -> String {
-    path.rsplit(['/', '\\'])
-        .find(|value| !value.is_empty())
+    path.replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
         .unwrap_or("unknown")
         .to_string()
 }
@@ -86,8 +99,14 @@ fn generic_error_summary(item: &BatchSigningItemResult) -> Option<String> {
     }
     Some(match item.status {
         BatchSigningStatus::Signed => "Completed with a non-fatal warning".to_string(),
-        BatchSigningStatus::Failed => "Signing pipeline failed; inspect sanitized diagnostics for details".to_string(),
+        BatchSigningStatus::Failed => {
+            "Signing pipeline failed; inspect sanitized diagnostics for details".to_string()
+        }
     })
+}
+
+fn saturating_add(total: &mut u64, value: u64) {
+    *total = total.saturating_add(value);
 }
 
 pub fn write_signing_report(
@@ -100,9 +119,15 @@ pub fn write_signing_report(
     let part_path = output_dir.join("signing-report.json.part");
     let _ = fs::remove_file(&part_path);
 
+    let mut stage_totals = SigningReportStageTotals::default();
     let report_items = items
         .iter()
         .map(|item| {
+            saturating_add(&mut stage_totals.inspection_ms, item.stage_timings.inspection_ms);
+            saturating_add(&mut stage_totals.signing_ms, item.stage_timings.signing_ms);
+            saturating_add(&mut stage_totals.packaging_ms, item.stage_timings.packaging_ms);
+            saturating_add(&mut stage_totals.validation_ms, item.stage_timings.validation_ms);
+
             let output_sha256 = item
                 .output_path
                 .as_deref()
@@ -119,6 +144,7 @@ pub fn write_signing_report(
                 output_file: item.output_path.as_deref().map(basename),
                 output_sha256,
                 duration_ms: item.duration_ms,
+                stage_timings: item.stage_timings.clone(),
                 validation_passed: validation.map(|value| value.valid),
                 extension_count: validation.map(|value| value.extension_count),
                 extension_profiles: validation.map(|value| value.extension_profiles),
@@ -139,6 +165,7 @@ pub fn write_signing_report(
         signed,
         failed: items.len().saturating_sub(signed),
         batch_duration_ms,
+        stage_totals,
         items: report_items,
     };
 
@@ -177,5 +204,12 @@ mod tests {
     fn basename_never_leaks_parent_directories() {
         assert_eq!(basename(r"C:\Users\Alice\secret\Demo.ipa"), "Demo.ipa");
         assert_eq!(basename("/home/alice/private/Demo.ipa"), "Demo.ipa");
+    }
+
+    #[test]
+    fn stage_total_addition_saturates_instead_of_wrapping() {
+        let mut total = u64::MAX - 1;
+        saturating_add(&mut total, 10);
+        assert_eq!(total, u64::MAX);
     }
 }
