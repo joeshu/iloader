@@ -1,4 +1,4 @@
-name: "Release iloader 2.4.1"
+name: "Release iloader 2.4.2"
 
 on:
   push:
@@ -38,24 +38,25 @@ jobs:
       - name: Build Windows installers
         run: npm run tauri build
 
-      - name: Publish Tagv5 release
+      - name: Publish Tagv6 release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: Tagv5
-          name: Tagv5
+          tag_name: Tagv6
+          name: Tagv6
           target_commitish: ${{ github.sha }}
           body: |
-            iloader 2.4.1
+            iloader 2.4.2
 
             Hotfix:
-            - Fix false `Not logged in` errors on the Certificates page caused by concurrent Sideloader-backed reads.
-            - Serialize certificate and App ID loading under the current Sideloader session model.
-            - Add Simplified Chinese labels and messages for signing-bundle export controls.
-            - Keep the 2.4.0 Signing Center P1 features and security boundaries unchanged.
+            - Fix Signing Center asset-health false failures caused by transient Sideloader contention.
+            - Retry temporary NotLoggedIn contention instead of surfacing it as an account logout.
+            - Localize the Signing Center Simplified Chinese UI, including buttons, status labels, queue summaries and signing results.
+            - Replace opaque `[object Object]` frontend errors with readable Chinese session/error messages.
+            - Keep the 2.4.0/2.4.1 signing security boundaries unchanged.
 
             Validation:
-            - Hotfix PR Build #111 passed.
-            - Merge-to-main Build #112 passed.
+            - Hotfix PR Build #116 passed.
+            - Merge-to-main Build #117 passed.
           files: |
             ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
             ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.msi
