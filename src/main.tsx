@@ -7,7 +7,10 @@ import { LogProvider } from "./LogContext";
 import { ErrorProvider } from "./ErrorContext";
 import { DialogProvider } from "./DialogContext";
 import "./i18next";
+import { installSigningCenterLocalization } from "./signingCenterLocalization";
 import { PlatformProvider } from "./PlatformContext";
+
+installSigningCenterLocalization();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
