@@ -92,13 +92,13 @@ fn check(
     code: &str,
     severity: SigningBundleImportSeverity,
     passed: bool,
-    message: impl Into<String>,
+    message: String,
 ) -> SigningBundleImportCheck {
     SigningBundleImportCheck {
         code: code.into(),
         severity,
         passed,
-        message: message.into(),
+        message,
     }
 }
 
@@ -249,9 +249,9 @@ pub async fn inspect_signing_bundle_import(
         SigningBundleImportSeverity::Error,
         !metadata.password_embedded,
         if metadata.password_embedded {
-            "Bundle metadata claims that the PKCS#12 password is embedded, which is not accepted.".into()
+            "Bundle metadata claims that the PKCS#12 password is embedded, which is not accepted.".to_string()
         } else {
-            "PKCS#12 password is not embedded in metadata.".into()
+            "PKCS#12 password is not embedded in metadata.".to_string()
         },
     ));
     checks.push(check(
@@ -272,7 +272,7 @@ pub async fn inspect_signing_bundle_import(
         SigningBundleImportSeverity::Error,
         !p12_bytes.is_empty(),
         if p12_bytes.is_empty() {
-            "development.p12 is empty.".into()
+            "development.p12 is empty.".to_string()
         } else {
             format!("development.p12 is present ({} bytes).", p12_bytes.len())
         },
@@ -282,7 +282,7 @@ pub async fn inspect_signing_bundle_import(
         SigningBundleImportSeverity::Warning,
         !metadata.machine_id.is_empty() && !metadata.machine_name.is_empty(),
         if metadata.machine_id.is_empty() || metadata.machine_name.is_empty() {
-            "Signing identity machine metadata is incomplete.".into()
+            "Signing identity machine metadata is incomplete.".to_string()
         } else {
             format!("Signing identity metadata names machine {}.", metadata.machine_name)
         },
@@ -394,7 +394,7 @@ pub async fn inspect_signing_bundle_import(
         "activation.engine_support",
         SigningBundleImportSeverity::Info,
         true,
-        "Validated staging only: the current signing engine has no supported session-scoped external PKCS#12/profile activation API, so imported private-key material is not persisted or activated.",
+        "Validated staging only: the current signing engine has no supported session-scoped external PKCS#12/profile activation API, so imported private-key material is not persisted or activated.".to_string(),
     ));
 
     let valid = checks.iter().all(|item| {
