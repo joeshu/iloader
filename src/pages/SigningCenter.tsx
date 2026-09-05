@@ -596,7 +596,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             const entitlementWarnings = item.report?.entitlements.bundles.flatMap((bundle) =>
               bundle.items.filter((entry) => entry.severity === "warning").map((entry) => `${bundle.name}: ${entry.message}`),
             );
-            const canExportBundle = item.stage === "signed" && item.report?.inspection.allBundleIdsMatched === true;
+            const canExportBundle = item.stage === "signed";
 
             return (
               <article className="signing-queue-item" key={item.path}>
