@@ -18,6 +18,8 @@ use crate::{
 };
 
 const ASSET_HEALTH_TTL: Duration = Duration::from_secs(60);
+const SIDELOADER_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const SIDELOADER_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,7 +126,21 @@ pub async fn get_signing_asset_health(
     sideloader_state: State<'_, SideloaderMutex>,
     force_refresh: Option<bool>,
 ) -> Result<SigningAssetHealthReport, AppError> {
-    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    // Signing Center currently requests its snapshot and asset health together. Both commands
+    // temporarily take the single Sideloader out of shared state. If the snapshot wins that
+    // race, this command must treat the temporary `NotLoggedIn` as contention rather than a
+    // real logout. Retry briefly until the in-flight Sideloader-backed read returns it.
+    let started = Instant::now();
+    let mut sideloader = loop {
+        match SideloaderGuard::take(&sideloader_state) {
+            Ok(sideloader) => break sideloader,
+            Err(AppError::NotLoggedIn) if started.elapsed() < SIDELOADER_RETRY_TIMEOUT => {
+                tokio::time::sleep(SIDELOADER_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+
     let email = sideloader.get_mut().get_email().to_string();
     let team = sideloader.get_mut().get_team().await?;
     let team_id = team.team_id.clone();
