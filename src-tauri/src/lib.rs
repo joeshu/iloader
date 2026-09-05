@@ -15,6 +15,7 @@ mod logging;
 mod operation;
 mod signing_bundle;
 mod signing_center;
+mod signing_validation;
 
 use crate::{
     account::{
@@ -35,6 +36,7 @@ use crate::{
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
     signing_bundle::export_ipa_signing_bundle,
     signing_center::{get_signing_center_snapshot, preflight_signing},
+    signing_validation::validate_signed_ipa,
 };
 use tauri::Manager;
 use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -134,6 +136,7 @@ pub fn run() {
             preflight_ipa,
             preflight_ipas,
             batch_sign_ipas,
+            validate_signed_ipa,
             installed_pairing_apps,
             place_pairing_cmd,
             reset_anisette_state,
