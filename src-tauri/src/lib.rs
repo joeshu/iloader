@@ -16,6 +16,7 @@ mod error;
 mod ipa_inspection;
 mod logging;
 mod operation;
+mod preflight_cache;
 mod signing_bundle;
 mod signing_center;
 mod signing_validation;
