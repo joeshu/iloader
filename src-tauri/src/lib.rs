@@ -20,6 +20,7 @@ mod preflight_cache;
 mod signing_bundle;
 mod signing_bundle_import;
 mod signing_center;
+mod signing_report;
 mod signing_validation;
 
 use crate::{
