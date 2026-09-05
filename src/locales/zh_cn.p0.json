@@ -1,0 +1,65 @@
+{
+  "error": {
+    "retryable_hint": "此错误可以重试。",
+    "actions": {
+      "sign_in": "请重新登录 Apple ID。",
+      "retry": "请稍后重试当前操作。",
+      "select_device": "请选择目标设备后重试。",
+      "manage_app_ids": "请检查或清理 App ID 名额。",
+      "remove_installed_apps": "请移除部分已安装的侧载应用后重试。",
+      "reauthenticate": "请重新验证 Apple ID 登录状态。",
+      "reconnect_device": "请重新连接设备并确认已信任此电脑。",
+      "retry_anisette": "请检查 Anisette 服务后重试。",
+      "check_secure_storage": "请检查系统凭据存储/钥匙串状态。",
+      "review_details": "请查看错误详情并按建议处理。"
+    },
+    "suggestions": {
+      "session_busy": [
+        "签名会话当前正被另一个操作占用，请等待片刻后重试。",
+        "如果持续超过 30 秒，请关闭正在运行的签名、证书或 App ID 操作后再试。"
+      ]
+    }
+  },
+  "signing_center": {
+    "title": "签名中心",
+    "subtitle": "预检应用元数据、权限和签名资产；支持持久化签名队列、签名验证以及失败重试。",
+    "refresh_assets": "刷新签名资产",
+    "refreshing": "正在刷新…",
+    "asset_health": "签名资产状态",
+    "healthy": "正常",
+    "attention": "注意",
+    "blocked": "已阻塞",
+    "team": "团队",
+    "certificates": "证书",
+    "development_identities": "开发者签名身份",
+    "app_ids": "App ID",
+    "devices": "设备",
+    "not_loaded": "尚未加载",
+    "quota_unavailable": "名额信息不可用",
+    "slots_available": "剩余 {{count}} 个可用名额",
+    "current_device_linked": "当前设备已加入预检",
+    "no_target_device": "未选择目标设备",
+    "select_ipas": "选择 IPA",
+    "scan_preflight": "扫描并预检",
+    "scanning": "正在扫描…",
+    "inspect_bundle": "检查签名包",
+    "inspecting_bundle": "正在检查签名包…",
+    "choose_output": "选择输出文件夹",
+    "sign_ready": "签名就绪项（{{count}}）",
+    "signing_batch": "正在批量签名…",
+    "retry_failed": "重试失败项",
+    "export_diagnostics": "导出诊断信息",
+    "exporting_diagnostics": "正在导出诊断信息…",
+    "clear_completed": "清除已完成",
+    "output": "输出位置",
+    "choose_destination": "选择已签名 IPA 的保存位置",
+    "total": "共 {{count}} 个",
+    "ready": "就绪 {{count}}",
+    "failed": "失败 {{count}}",
+    "signed": "已签名 {{count}}",
+    "empty": "选择多个 IPA 文件建立持久化签名队列。中断的任务会在下次启动时恢复，但未签名项目在重新签名前必须再次完成预检。",
+    "load_failed": "加载签名中心失败",
+    "asset_health_failed": "加载签名资产状态失败",
+    "session_busy": "签名会话暂时被占用，请稍后重试。"
+  }
+}
