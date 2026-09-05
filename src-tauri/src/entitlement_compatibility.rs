@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 use apple_codesign::ProvisioningProfile;
 use isideload::{
     dev::{
-        app_ids::{AppId, AppIdsApi},
+        app_ids::AppId,
         developer_session::DeveloperSession,
         teams::DeveloperTeam,
     },
@@ -15,6 +15,7 @@ use tauri::State;
 
 use crate::{
     error::AppError,
+    preflight_cache::{app_ids_cached, profile_cached},
     sideload::{SideloaderGuard, SideloaderMutex},
 };
 
@@ -184,18 +185,11 @@ fn compare_entitlements(
                     format!("Entitlement {key} differs from the source IPA and will change after signing."),
                 )
             }
-            (Some(_), None) if target_pending_registration => {
-                let severity = if capability_sensitive_key(&key) {
-                    EntitlementCompatibilitySeverity::Error
-                } else {
-                    EntitlementCompatibilitySeverity::Warning
-                };
-                (
-                    EntitlementCompatibilityStatus::PendingRegistration,
-                    severity,
-                    format!("Entitlement {key} exists in the source IPA, but the target App ID does not exist yet. The current signing engine cannot guarantee this entitlement will be recreated automatically."),
-                )
-            }
+            (Some(_), None) if target_pending_registration => (
+                EntitlementCompatibilityStatus::PendingRegistration,
+                EntitlementCompatibilitySeverity::Warning,
+                format!("Entitlement {key} exists in the source IPA, but the target App ID does not exist yet. Compatibility remains unknown until registration/profile creation completes."),
+            ),
             (Some(_), None) => {
                 let severity = if capability_sensitive_key(&key) {
                     EntitlementCompatibilitySeverity::Error
@@ -271,6 +265,7 @@ pub async fn build_entitlement_compatibility(
     dev_session: &mut DeveloperSession,
     team: &DeveloperTeam,
     app_ids: &[AppId],
+    account_scope: &str,
 ) -> Result<EntitlementCompatibilityReport, AppError> {
     let targets = build_targets(application, &team.team_id)?;
     let mut bundles = Vec::with_capacity(targets.len());
@@ -283,10 +278,8 @@ pub async fn build_entitlement_compatibility(
             .iter()
             .find(|app_id| app_id.identifier == target.signing_bundle_identifier);
         let target_entitlements = if let Some(app_id) = matching_app_id {
-            let profile = dev_session
-                .download_team_provisioning_profile(team, app_id, None)
-                .await?;
-            Some(profile_entitlements(profile.encoded_profile.as_ref())?)
+            let profile = profile_cached(dev_session, team, app_id, account_scope, false).await?;
+            Some(profile_entitlements(&profile.encoded_profile)?)
         } else {
             None
         };
@@ -335,9 +328,19 @@ pub async fn preflight_ipa_entitlements(
 ) -> Result<EntitlementCompatibilityReport, AppError> {
     let application = Application::new(PathBuf::from(&ipa_path))?;
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let account_scope = sideloader.get_mut().get_email().to_string();
     let team = sideloader.get_mut().get_team().await?;
     let dev_session = sideloader.get_mut().get_dev_session();
-    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
+    let app_ids = app_ids_cached(dev_session, &team, &account_scope, false)
+        .await?
+        .app_ids;
 
-    build_entitlement_compatibility(&application, dev_session, &team, &app_ids).await
+    build_entitlement_compatibility(
+        &application,
+        dev_session,
+        &team,
+        &app_ids,
+        &account_scope,
+    )
+    .await
 }
