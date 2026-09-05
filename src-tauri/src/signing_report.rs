@@ -41,6 +41,13 @@ struct SigningReportStageTotals {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SigningReportConcurrency {
+    signing: usize,
+    post_process: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SigningReportDocument {
     format_version: u32,
     generated_at_utc: String,
@@ -49,6 +56,7 @@ struct SigningReportDocument {
     signed: usize,
     failed: usize,
     batch_duration_ms: u64,
+    concurrency: SigningReportConcurrency,
     stage_totals: SigningReportStageTotals,
     items: Vec<SigningReportItem>,
 }
@@ -114,6 +122,8 @@ pub fn write_signing_report(
     team_id: &str,
     items: &[BatchSigningItemResult],
     batch_duration_ms: u64,
+    signing_concurrency: usize,
+    post_process_concurrency: usize,
 ) -> Result<PathBuf, AppError> {
     let report_path = output_dir.join("signing-report.json");
     let part_path = output_dir.join("signing-report.json.part");
@@ -165,6 +175,10 @@ pub fn write_signing_report(
         signed,
         failed: items.len().saturating_sub(signed),
         batch_duration_ms,
+        concurrency: SigningReportConcurrency {
+            signing: signing_concurrency,
+            post_process: post_process_concurrency,
+        },
         stage_totals,
         items: report_items,
     };
