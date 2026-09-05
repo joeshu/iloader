@@ -147,12 +147,21 @@ type SignedIpaValidation = {
   extensionProfiles: number;
 };
 
+type BatchSigningStageTimings = {
+  inspectionMs: number;
+  signingMs: number;
+  packagingMs: number;
+  validationMs: number;
+};
+
 type BatchSigningItemResult = {
   inputPath: string;
   status: "signed" | "failed";
   outputPath?: string | null;
   validation?: SignedIpaValidation | null;
   error?: string | null;
+  durationMs: number;
+  stageTimings: BatchSigningStageTimings;
 };
 
 type BatchSigningReport = {
@@ -160,6 +169,9 @@ type BatchSigningReport = {
   signed: number;
   failed: number;
   outputDirectory: string;
+  batchDurationMs: number;
+  reportPath?: string | null;
+  reportError?: string | null;
   items: BatchSigningItemResult[];
 };
 
@@ -243,6 +255,10 @@ type PersistedQueueState = {
 
 const PERSISTENCE_KEY = "iloader.signing-center.queue.v1";
 const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
+const formatDuration = (milliseconds: number) => {
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 2 : 1)} s`;
+};
 
 const stageLabel: Record<QueueStage, string> = {
   pending: "Pending",
@@ -308,6 +324,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [inspectingImport, setInspectingImport] = useState(false);
   const [importReport, setImportReport] = useState<SigningBundleImportReport | null>(null);
+  const [lastSigningReport, setLastSigningReport] = useState<BatchSigningReport | null>(null);
 
   useEffect(() => {
     const persisted: PersistedQueueState = { version: 1, outputDirectory, queue };
@@ -333,9 +350,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     setLoadingHealth(true);
     try {
       setAssetHealth(
-        await invoke<SigningAssetHealthReport>("get_signing_asset_health", {
-          forceRefresh,
-        }),
+        await invoke<SigningAssetHealthReport>("get_signing_asset_health", { forceRefresh }),
       );
     } catch (error) {
       toast.error(`Failed to load signing asset health: ${String(error)}`);
@@ -426,7 +441,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       });
       setImportReport(report);
       if (report.valid) {
-        toast.success(`Signing bundle verified: ${report.profileCount} profile(s) are structurally valid.`);
+        toast.success(`Signing bundle validated and staged: ${report.profileCount} profile(s) passed inspection.`);
       } else {
         toast.warning("Signing bundle inspection found blocking validation errors.");
       }
@@ -516,11 +531,13 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
       }
 
       setSigning(true);
+      setLastSigningReport(null);
       try {
         const report = await invoke<BatchSigningReport>("batch_sign_ipas", {
           ipaPaths,
           outputDirectory,
         });
+        setLastSigningReport(report);
         setQueue((current) =>
           current.map((item) => {
             const result = report.items.find((candidate) => candidate.inputPath === item.path);
@@ -535,8 +552,13 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
           }),
         );
 
-        if (report.failed === 0) toast.success(`Signed and validated ${report.signed} IPA(s).`);
-        else toast.warning(`Signed and validated ${report.signed}; ${report.failed} failed.`);
+        const reportSuffix = report.reportPath ? ` Report: ${fileName(report.reportPath)}.` : "";
+        if (report.failed === 0) {
+          toast.success(`Signed and validated ${report.signed} IPA(s) in ${formatDuration(report.batchDurationMs)}.${reportSuffix}`);
+        } else {
+          toast.warning(`Signed ${report.signed}; ${report.failed} failed in ${formatDuration(report.batchDurationMs)}.${reportSuffix}`);
+        }
+        if (report.reportError) toast.warning(report.reportError);
         void Promise.all([loadSnapshot(), loadAssetHealth(true)]);
       } catch (error) {
         toast.error(`Batch signing failed: ${String(error)}`);
@@ -646,6 +668,17 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
     return { ready, blocked, signed, failed };
   }, [queue]);
 
+  const stageTotals = useMemo(() => {
+    const totals: BatchSigningStageTimings = { inspectionMs: 0, signingMs: 0, packagingMs: 0, validationMs: 0 };
+    for (const item of lastSigningReport?.items || []) {
+      totals.inspectionMs += item.stageTimings.inspectionMs;
+      totals.signingMs += item.stageTimings.signingMs;
+      totals.packagingMs += item.stageTimings.packagingMs;
+      totals.validationMs += item.stageTimings.validationMs;
+    }
+    return totals;
+  }, [lastSigningReport]);
+
   const busy = scanning || signing || inspectingImport;
   const assetBusy = loadingSnapshot || loadingHealth;
 
@@ -675,9 +708,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                 </span>
               </div>
             </div>
-            <small>
-              {assetHealth.cached ? `Cached · TTL ${assetHealth.cacheTtlSeconds}s` : "Live refresh"}
-            </small>
+            <small>{assetHealth.cached ? `Cached · TTL ${assetHealth.cacheTtlSeconds}s` : "Live refresh"}</small>
           </div>
           <div className="signing-health-checks">
             {assetHealth.checks.map((check) => (
@@ -719,11 +750,11 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
         <section className={`signing-health-panel health-${importReport.valid ? "healthy" : "error"}`}>
           <div className="signing-health-header">
             <div>
-              <span className="signing-health-kicker">Signing Bundle import inspection</span>
+              <span className="signing-health-kicker">Signing Bundle validated staging</span>
               <div className="signing-health-title-row">
-                <strong>{importReport.valid ? "Verified" : "Blocked"}</strong>
+                <strong>{importReport.valid ? "Validated staging" : "Blocked"}</strong>
                 <span className={`signing-health-badge health-${importReport.valid ? "healthy" : "error"}`}>
-                  {importReport.valid ? "validated" : "invalid"}
+                  {importReport.valid ? "staged" : "invalid"}
                 </span>
               </div>
             </div>
@@ -733,7 +764,7 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             <div className="signing-asset-card"><span>Source IPA</span><strong>{importReport.sourceIpa || "—"}</strong><small>Bundle metadata</small></div>
             <div className="signing-asset-card"><span>Team</span><strong>{importReport.teamId || "—"}</strong><small>{importReport.teamId === importReport.currentTeamId ? "Matches active team" : `Active: ${importReport.currentTeamId}`}</small></div>
             <div className="signing-asset-card"><span>Certificate</span><strong>{importReport.certificateSerialNumber || "—"}</strong><small>Serial number</small></div>
-            <div className="signing-asset-card"><span>Profiles</span><strong>{importReport.profileCount}</strong><small>{importReport.canActivate ? "Eligible for password-gated activation" : "Activation blocked"}</small></div>
+            <div className="signing-asset-card"><span>Profiles</span><strong>{importReport.profileCount}</strong><small>{importReport.valid ? "Validated for staging only" : "Staging blocked"}</small></div>
           </div>
           <div className="signing-health-checks">
             {importReport.checks.map((check) => {
@@ -750,10 +781,35 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
             })}
           </div>
           <div className="signing-note">
-            {importReport.canActivate
-              ? "Integrity and team/profile validation passed. Private-key activation is not performed automatically; the next step must require the separately supplied PKCS#12 password."
-              : "Activation is disabled until every blocking import validation check passes."}
+            {importReport.valid
+              ? "Integrity, team and profile checks passed. The bundle is validated staging only: no private key or PKCS#12 password is persisted, and the current signing engine does not activate imported credentials."
+              : "The bundle cannot enter validated staging until every blocking import check passes."}
           </div>
+        </section>
+      )}
+
+      {lastSigningReport && (
+        <section className={`signing-health-panel health-${lastSigningReport.failed === 0 ? "healthy" : "warning"}`}>
+          <div className="signing-health-header">
+            <div>
+              <span className="signing-health-kicker">Latest signing performance</span>
+              <div className="signing-health-title-row">
+                <strong>{formatDuration(lastSigningReport.batchDurationMs)}</strong>
+                <span className={`signing-health-badge health-${lastSigningReport.failed === 0 ? "healthy" : "warning"}`}>
+                  {lastSigningReport.signed}/{lastSigningReport.total} signed
+                </span>
+              </div>
+            </div>
+            <small>{lastSigningReport.reportPath ? fileName(lastSigningReport.reportPath) : "Report unavailable"}</small>
+          </div>
+          <div className="signing-health-checks">
+            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Inspection</strong><span>{formatDuration(stageTotals.inspectionMs)}</span></div><small>IPA structure and metadata loading</small></div>
+            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Signing</strong><span>{formatDuration(stageTotals.signingMs)}</span></div><small>Apple assets, bundle mutation and code signing</small></div>
+            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Packaging</strong><span>{formatDuration(stageTotals.packagingMs)}</span></div><small>Payload ZIP creation and atomic publication</small></div>
+            <div className="signing-health-check health-healthy"><div className="signing-health-check-title"><strong>Validation</strong><span>{formatDuration(stageTotals.validationMs)}</span></div><small>Signed IPA structural validation</small></div>
+          </div>
+          {lastSigningReport.reportPath && <div className="signing-result-path">Signing report: {lastSigningReport.reportPath}</div>}
+          {lastSigningReport.reportError && <div className="signing-checks signing-checks-warning">{lastSigningReport.reportError}</div>}
         </section>
       )}
 
@@ -819,7 +875,6 @@ export const SigningCenter = ({ deviceUdid }: SigningCenterProps) => {
                 {(item.report?.inspection.requiresRegistrationBundleIds.length || 0) > 0 && (
                   <div className="signing-note">App IDs to register automatically: {item.report?.inspection.requiresRegistrationBundleIds.join(", ")}</div>
                 )}
-
                 {(blockingChecks?.length || 0) > 0 && (
                   <div className="signing-checks signing-checks-error">{blockingChecks?.map((check) => <div key={check.code}>{check.message}</div>)}</div>
                 )}
