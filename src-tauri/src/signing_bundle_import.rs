@@ -391,10 +391,10 @@ pub async fn inspect_signing_bundle_import(
     ));
 
     checks.push(check(
-        "activation.password_required",
+        "activation.engine_support",
         SigningBundleImportSeverity::Info,
         true,
-        "Integrity inspection does not decrypt or activate development.p12. Activation must require the separately supplied PKCS#12 password.",
+        "Validated staging only: the current signing engine has no supported session-scoped external PKCS#12/profile activation API, so imported private-key material is not persisted or activated.",
     ));
 
     let valid = checks.iter().all(|item| {
@@ -403,7 +403,7 @@ pub async fn inspect_signing_bundle_import(
 
     Ok(SigningBundleImportReport {
         valid,
-        can_activate: valid,
+        can_activate: false,
         archive_path,
         source_ipa: metadata.source_ipa,
         team_id: metadata.team_id,
