@@ -1,4 +1,9 @@
-use std::{collections::{HashMap, HashSet}, fs::File, io::Read, path::{Component, Path, PathBuf}};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::Read,
+    path::{Component, Path, PathBuf},
+};
 
 use apple_codesign::ProvisioningProfile;
 use serde::{Deserialize, Serialize};
@@ -13,6 +18,7 @@ use crate::{
 
 const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 256;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,13 +118,54 @@ fn safe_archive_path(path: &str) -> bool {
     }
     let parsed = Path::new(path);
     !parsed.is_absolute()
-        && parsed.components().all(|component| matches!(component, Component::Normal(_)))
+        && parsed
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
-fn read_entry(
-    archive: &mut ZipArchive<File>,
-    name: &str,
-) -> Result<Vec<u8>, AppError> {
+fn profile_role_supported(role: &str) -> bool {
+    matches!(role, "main" | "extension")
+}
+
+fn add_uncompressed_size(total: u64, next: u64) -> Result<u64, AppError> {
+    let total = total.checked_add(next).ok_or_else(|| {
+        AppError::Misc("Signing bundle uncompressed size overflowed the validation counter.".into())
+    })?;
+    if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(AppError::Misc(format!(
+            "Signing bundle exceeds the maximum uncompressed size of {} bytes.",
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        )));
+    }
+    Ok(total)
+}
+
+fn expected_archive_files(metadata: &ImportBundleMetadata) -> HashSet<String> {
+    std::iter::once("development.p12".to_string())
+        .chain(std::iter::once("metadata.json".to_string()))
+        .chain(std::iter::once("checksums.sha256".to_string()))
+        .chain(
+            metadata
+                .profiles
+                .iter()
+                .map(|profile| profile.archive_path.clone()),
+        )
+        .collect()
+}
+
+fn expected_checksum_paths(metadata: &ImportBundleMetadata) -> HashSet<String> {
+    std::iter::once("development.p12".to_string())
+        .chain(std::iter::once("metadata.json".to_string()))
+        .chain(
+            metadata
+                .profiles
+                .iter()
+                .map(|profile| profile.archive_path.clone()),
+        )
+        .collect()
+}
+
+fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>, AppError> {
     let mut entry = archive
         .by_name(name)
         .map_err(|error| AppError::Misc(format!("Signing bundle is missing {name}: {error}")))?;
@@ -159,7 +206,10 @@ fn parse_checksums(bytes: &[u8]) -> Result<HashMap<String, String>, AppError> {
         if !safe_archive_path(path) {
             return Err(AppError::Misc(format!("Unsafe checksum path: {path}")));
         }
-        if checksums.insert(path.to_string(), digest.to_ascii_lowercase()).is_some() {
+        if checksums
+            .insert(path.to_string(), digest.to_ascii_lowercase())
+            .is_some()
+        {
             return Err(AppError::Misc(format!("Duplicate checksum entry: {path}")));
         }
     }
@@ -199,6 +249,8 @@ pub async fn inspect_signing_bundle_import(
     }
 
     let mut seen_names = HashSet::new();
+    let mut seen_file_names = HashSet::new();
+    let mut total_uncompressed_bytes = 0_u64;
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
@@ -211,11 +263,15 @@ pub async fn inspect_signing_bundle_import(
         if !seen_names.insert(name.clone()) {
             return Err(AppError::Misc(format!("Duplicate ZIP entry: {name}")));
         }
-        if !entry.is_dir() && entry.size() > MAX_ENTRY_BYTES {
-            return Err(AppError::Misc(format!(
-                "Signing bundle entry {name} is too large ({} bytes)",
-                entry.size()
-            )));
+        if !entry.is_dir() {
+            if entry.size() > MAX_ENTRY_BYTES {
+                return Err(AppError::Misc(format!(
+                    "Signing bundle entry {name} is too large ({} bytes)",
+                    entry.size()
+                )));
+            }
+            total_uncompressed_bytes = add_uncompressed_size(total_uncompressed_bytes, entry.size())?;
+            seen_file_names.insert(name);
         }
     }
 
@@ -225,6 +281,48 @@ pub async fn inspect_signing_bundle_import(
     let metadata: ImportBundleMetadata = serde_json::from_slice(&metadata_bytes)
         .map_err(|error| AppError::Misc(format!("Invalid signing-bundle metadata.json: {error}")))?;
     let checksums = parse_checksums(&checksum_bytes)?;
+
+    for profile in &metadata.profiles {
+        if !safe_archive_path(&profile.archive_path) {
+            return Err(AppError::Misc(format!(
+                "Unsafe declared profile archive path: {}",
+                profile.archive_path
+            )));
+        }
+    }
+
+    let expected_files = expected_archive_files(&metadata);
+    if seen_file_names != expected_files {
+        let unexpected = seen_file_names
+            .difference(&expected_files)
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing = expected_files
+            .difference(&seen_file_names)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::Misc(format!(
+            "Signing bundle file set does not match metadata. Unexpected: {:?}; missing: {:?}.",
+            unexpected, missing
+        )));
+    }
+
+    let expected_checksum_paths = expected_checksum_paths(&metadata);
+    let actual_checksum_paths = checksums.keys().cloned().collect::<HashSet<_>>();
+    if actual_checksum_paths != expected_checksum_paths {
+        let unexpected = actual_checksum_paths
+            .difference(&expected_checksum_paths)
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing = expected_checksum_paths
+            .difference(&actual_checksum_paths)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::Misc(format!(
+            "Checksum manifest does not match the expected file set. Unexpected: {:?}; missing: {:?}.",
+            unexpected, missing
+        )));
+    }
 
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
     let current_team = sideloader.get_mut().get_team().await?;
@@ -236,7 +334,10 @@ pub async fn inspect_signing_bundle_import(
         "format.version",
         SigningBundleImportSeverity::Error,
         metadata.format_version == 1,
-        format!("Signing bundle format version is {} (supported: 1).", metadata.format_version),
+        format!(
+            "Signing bundle format version is {} (supported: 1).",
+            metadata.format_version
+        ),
     ));
     checks.push(check(
         "checksum.algorithm",
@@ -245,11 +346,39 @@ pub async fn inspect_signing_bundle_import(
         format!("Checksum algorithm is {}.", metadata.checksum_algorithm),
     ));
     checks.push(check(
+        "archive.total_size",
+        SigningBundleImportSeverity::Error,
+        total_uncompressed_bytes <= MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        format!(
+            "Signing bundle uncompressed payload is {} bytes (limit: {}).",
+            total_uncompressed_bytes, MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        ),
+    ));
+    checks.push(check(
+        "archive.file_set",
+        SigningBundleImportSeverity::Error,
+        true,
+        format!(
+            "Signing bundle contains exactly {} expected file(s).",
+            expected_files.len()
+        ),
+    ));
+    checks.push(check(
+        "checksum.file_set",
+        SigningBundleImportSeverity::Error,
+        true,
+        format!(
+            "Checksum manifest contains exactly {} expected path(s).",
+            expected_checksum_paths.len()
+        ),
+    ));
+    checks.push(check(
         "password.not_embedded",
         SigningBundleImportSeverity::Error,
         !metadata.password_embedded,
         if metadata.password_embedded {
-            "Bundle metadata claims that the PKCS#12 password is embedded, which is not accepted.".to_string()
+            "Bundle metadata claims that the PKCS#12 password is embedded, which is not accepted."
+                .to_string()
         } else {
             "PKCS#12 password is not embedded in metadata.".to_string()
         },
@@ -259,7 +388,10 @@ pub async fn inspect_signing_bundle_import(
         SigningBundleImportSeverity::Error,
         metadata.team_id == current_team_id,
         if metadata.team_id == current_team_id {
-            format!("Bundle team {} matches the active developer team.", metadata.team_id)
+            format!(
+                "Bundle team {} matches the active developer team.",
+                metadata.team_id
+            )
         } else {
             format!(
                 "Bundle team {} does not match active team {}.",
@@ -284,26 +416,16 @@ pub async fn inspect_signing_bundle_import(
         if metadata.machine_id.is_empty() || metadata.machine_name.is_empty() {
             "Signing identity machine metadata is incomplete.".to_string()
         } else {
-            format!("Signing identity metadata names machine {}.", metadata.machine_name)
+            format!(
+                "Signing identity metadata names machine {}.",
+                metadata.machine_name
+            )
         },
     ));
 
-    let required_checksum_paths = std::iter::once("development.p12".to_string())
-        .chain(std::iter::once("metadata.json".to_string()))
-        .chain(metadata.profiles.iter().map(|profile| profile.archive_path.clone()))
-        .collect::<Vec<_>>();
+    let required_checksum_paths = expected_checksum_paths.iter().cloned().collect::<Vec<_>>();
     let mut all_checksums_valid = true;
     for entry_path in &required_checksum_paths {
-        if !safe_archive_path(entry_path) {
-            all_checksums_valid = false;
-            checks.push(check(
-                "checksum.path",
-                SigningBundleImportSeverity::Error,
-                false,
-                format!("Unsafe declared archive path: {entry_path}"),
-            ));
-            continue;
-        }
         let bytes = if entry_path == "development.p12" {
             p12_bytes.clone()
         } else if entry_path == "metadata.json" {
@@ -327,10 +449,26 @@ pub async fn inspect_signing_bundle_import(
         ));
     }
 
+    let roles_valid = metadata
+        .profiles
+        .iter()
+        .all(|profile| profile_role_supported(&profile.role));
+    checks.push(check(
+        "profiles.roles",
+        SigningBundleImportSeverity::Error,
+        roles_valid,
+        if roles_valid {
+            "All provisioning profile roles are supported (main or extension).".to_string()
+        } else {
+            "One or more provisioning profile roles are unsupported; only main and extension are accepted."
+                .to_string()
+        },
+    ));
+
     let mut unique_profile_paths = HashSet::new();
     let mut unique_profile_uuids = HashSet::new();
     let mut main_profiles = 0usize;
-    let mut profile_validation_ok = true;
+    let mut profile_validation_ok = roles_valid;
     for profile_meta in &metadata.profiles {
         if profile_meta.role == "main" {
             main_profiles += 1;
@@ -365,7 +503,9 @@ pub async fn inspect_signing_bundle_import(
             if application_identifier_matches && team_matches {
                 format!(
                     "Provisioning profile {} matches signing identifier {} and team {}.",
-                    profile_meta.profile_name, profile_meta.signing_bundle_identifier, metadata.team_id
+                    profile_meta.profile_name,
+                    profile_meta.signing_bundle_identifier,
+                    metadata.team_id
                 )
             } else {
                 format!(
@@ -376,7 +516,8 @@ pub async fn inspect_signing_bundle_import(
         ));
     }
 
-    let profile_shape_valid = main_profiles == 1
+    let profile_shape_valid = roles_valid
+        && main_profiles == 1
         && !metadata.profiles.is_empty()
         && unique_profile_paths.len() == metadata.profiles.len()
         && unique_profile_uuids.len() == metadata.profiles.len();
@@ -386,7 +527,8 @@ pub async fn inspect_signing_bundle_import(
         profile_shape_valid,
         format!(
             "Bundle declares {} profile(s), including {} main profile(s).",
-            metadata.profiles.len(), main_profiles
+            metadata.profiles.len(),
+            main_profiles
         ),
     ));
 
@@ -394,12 +536,15 @@ pub async fn inspect_signing_bundle_import(
         "activation.engine_support",
         SigningBundleImportSeverity::Info,
         true,
-        "Validated staging only: the current signing engine has no supported session-scoped external PKCS#12/profile activation API, so imported private-key material is not persisted or activated.".to_string(),
+        "Validated staging only: the current signing engine has no supported session-scoped external PKCS#12/profile activation API, so imported private-key material is not persisted or activated."
+            .to_string(),
     ));
 
     let valid = checks.iter().all(|item| {
         !matches!(item.severity, SigningBundleImportSeverity::Error) || item.passed
-    }) && all_checksums_valid && profile_validation_ok && profile_shape_valid;
+    }) && all_checksums_valid
+        && profile_validation_ok
+        && profile_shape_valid;
 
     Ok(SigningBundleImportReport {
         valid,
@@ -445,5 +590,58 @@ mod tests {
     fn checksum_parser_rejects_duplicates() {
         let data = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  metadata.json\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  metadata.json\n";
         assert!(parse_checksums(data).is_err());
+    }
+
+    #[test]
+    fn total_uncompressed_size_is_capped() {
+        assert_eq!(
+            add_uncompressed_size(MAX_ARCHIVE_UNCOMPRESSED_BYTES - 1, 1).expect("at limit"),
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        );
+        assert!(add_uncompressed_size(MAX_ARCHIVE_UNCOMPRESSED_BYTES, 1).is_err());
+        assert!(add_uncompressed_size(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn profile_roles_are_strict() {
+        assert!(profile_role_supported("main"));
+        assert!(profile_role_supported("extension"));
+        assert!(!profile_role_supported("widget"));
+        assert!(!profile_role_supported(""));
+    }
+
+    #[test]
+    fn file_sets_require_exact_membership() {
+        let expected = HashSet::from([
+            "development.p12".to_string(),
+            "metadata.json".to_string(),
+            "checksums.sha256".to_string(),
+            "profiles/main.mobileprovision".to_string(),
+        ]);
+        let exact = expected.clone();
+        assert_eq!(exact, expected);
+
+        let mut extra = expected.clone();
+        extra.insert("unexpected.bin".to_string());
+        assert_ne!(extra, expected);
+
+        let mut missing = expected.clone();
+        missing.remove("development.p12");
+        assert_ne!(missing, expected);
+    }
+
+    #[test]
+    fn checksum_sets_require_exact_membership() {
+        let expected = HashSet::from([
+            "development.p12".to_string(),
+            "metadata.json".to_string(),
+            "profiles/main.mobileprovision".to_string(),
+        ]);
+        let exact = expected.clone();
+        assert_eq!(exact, expected);
+
+        let mut extra = expected.clone();
+        extra.insert("checksums.sha256".to_string());
+        assert_ne!(extra, expected);
     }
 }
