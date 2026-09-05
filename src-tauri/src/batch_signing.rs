@@ -1,7 +1,9 @@
 use std::{
+    collections::{HashSet, VecDeque},
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+    thread::{self, JoinHandle},
     time::Instant,
 };
 
@@ -17,6 +19,9 @@ use crate::{
     signing_report::write_signing_report,
     signing_validation::{SignedIpaValidation, validate_signed_ipa_path},
 };
+
+pub const SIGNING_CONCURRENCY: usize = 1;
+pub const POST_PROCESS_CONCURRENCY: usize = 2;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +61,8 @@ pub struct BatchSigningReport {
     pub failed: usize,
     pub output_directory: String,
     pub batch_duration_ms: u64,
+    pub signing_concurrency: usize,
+    pub post_process_concurrency: usize,
     pub report_path: Option<String>,
     pub report_error: Option<String>,
     pub items: Vec<BatchSigningItemResult>,
@@ -70,6 +77,15 @@ pub struct BatchSigningProgress {
     pub bundle_identifier: Option<String>,
     pub output_path: Option<String>,
     pub error: Option<String>,
+}
+
+struct PendingPostProcess {
+    input_path: String,
+    app_name: Option<String>,
+    bundle_identifier: Option<String>,
+    item_started: Instant,
+    stage_timings: BatchSigningStageTimings,
+    handle: JoinHandle<BatchSigningItemResult>,
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -244,16 +260,20 @@ fn output_stem(input: &Path) -> String {
         .to_string()
 }
 
-fn unique_output_path(output_dir: &Path, input: &Path) -> PathBuf {
+fn unique_output_path(
+    output_dir: &Path,
+    input: &Path,
+    reserved: &HashSet<PathBuf>,
+) -> PathBuf {
     let stem = output_stem(input);
     let first = output_dir.join(format!("{stem}-signed.ipa"));
-    if !first.exists() {
+    if !first.exists() && !reserved.contains(&first) {
         return first;
     }
 
     for index in 2..=10_000 {
         let candidate = output_dir.join(format!("{stem}-signed-{index}.ipa"));
-        if !candidate.exists() {
+        if !candidate.exists() && !reserved.contains(&candidate) {
             return candidate;
         }
     }
@@ -283,6 +303,174 @@ fn failed_item(
     }
 }
 
+fn post_process_signed_app(
+    window: Window,
+    input: String,
+    app_name: Option<String>,
+    bundle_identifier: Option<String>,
+    signed_app_path: PathBuf,
+    output_path: PathBuf,
+    item_started: Instant,
+    mut timings: BatchSigningStageTimings,
+) -> BatchSigningItemResult {
+    let output_path_string = output_path.display().to_string();
+
+    let packaging_started = Instant::now();
+    let packaging_result = package_signed_app(&signed_app_path, &output_path);
+    timings.packaging_ms = elapsed_ms(packaging_started);
+
+    if let Err(error) = packaging_result {
+        let message = format!("Packaging failed: {error}");
+        let _ = fs::remove_file(&output_path);
+        emit_progress(
+            &window,
+            &input,
+            "failed",
+            app_name.clone(),
+            bundle_identifier.clone(),
+            None,
+            Some(message.clone()),
+        );
+        let _ = fs::remove_dir_all(&signed_app_path);
+        return failed_item(
+            input,
+            app_name,
+            bundle_identifier,
+            None,
+            message,
+            elapsed_ms(item_started),
+            timings,
+        );
+    }
+
+    emit_progress(
+        &window,
+        &input,
+        "validating",
+        app_name.clone(),
+        bundle_identifier.clone(),
+        Some(output_path_string.clone()),
+        None,
+    );
+    let validation_started = Instant::now();
+    let validation_result = validate_signed_ipa_path(&output_path);
+    timings.validation_ms = elapsed_ms(validation_started);
+
+    let result = match validation_result {
+        Ok(validation) if validation.valid => {
+            emit_progress(
+                &window,
+                &input,
+                "signed",
+                app_name.clone(),
+                bundle_identifier.clone(),
+                Some(output_path_string.clone()),
+                None,
+            );
+            BatchSigningItemResult {
+                input_path: input,
+                app_name,
+                bundle_identifier,
+                status: BatchSigningStatus::Signed,
+                output_path: Some(output_path_string),
+                validation: Some(validation),
+                error: None,
+                duration_ms: elapsed_ms(item_started),
+                stage_timings: timings,
+            }
+        }
+        Ok(validation) => {
+            let message = "Signed IPA failed structural validation; output was removed.".to_string();
+            let _ = fs::remove_file(&output_path);
+            emit_progress(
+                &window,
+                &input,
+                "failed",
+                app_name.clone(),
+                bundle_identifier.clone(),
+                None,
+                Some(message.clone()),
+            );
+            failed_item(
+                input,
+                app_name,
+                bundle_identifier,
+                Some(validation),
+                message,
+                elapsed_ms(item_started),
+                timings,
+            )
+        }
+        Err(error) => {
+            let message = format!("Validation failed: {error}");
+            let _ = fs::remove_file(&output_path);
+            emit_progress(
+                &window,
+                &input,
+                "failed",
+                app_name.clone(),
+                bundle_identifier.clone(),
+                None,
+                Some(message.clone()),
+            );
+            failed_item(
+                input,
+                app_name,
+                bundle_identifier,
+                None,
+                message,
+                elapsed_ms(item_started),
+                timings,
+            )
+        }
+    };
+
+    if let Err(error) = fs::remove_dir_all(&signed_app_path) {
+        tracing::warn!(
+            "Failed to clean signed app temp directory {}: {}",
+            signed_app_path.display(),
+            error
+        );
+    }
+
+    result
+}
+
+fn collect_one_pending(
+    pending: &mut VecDeque<PendingPostProcess>,
+    window: &Window,
+    items: &mut Vec<BatchSigningItemResult>,
+) {
+    let Some(job) = pending.pop_front() else {
+        return;
+    };
+
+    match job.handle.join() {
+        Ok(result) => items.push(result),
+        Err(_) => {
+            let message = "Post-processing worker terminated unexpectedly.".to_string();
+            emit_progress(
+                window,
+                &job.input_path,
+                "failed",
+                job.app_name.clone(),
+                job.bundle_identifier.clone(),
+                None,
+                Some(message.clone()),
+            );
+            items.push(failed_item(
+                job.input_path,
+                job.app_name,
+                job.bundle_identifier,
+                None,
+                message,
+                elapsed_ms(job.item_started),
+                job.stage_timings,
+            ));
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn batch_sign_ipas(
     window: Window,
@@ -303,6 +491,8 @@ pub async fn batch_sign_ipas(
     let account_scope = sideloader.get_mut().get_email().to_string();
     let team_id = sideloader.get_mut().get_team().await?.team_id;
     let mut items = Vec::with_capacity(ipa_paths.len());
+    let mut pending = VecDeque::<PendingPostProcess>::new();
+    let mut reserved_output_paths = HashSet::<PathBuf>::new();
 
     for input in ipa_paths {
         let item_started = Instant::now();
@@ -392,7 +582,8 @@ pub async fn batch_sign_ipas(
             }
         };
 
-        let output_path = unique_output_path(&output_dir, &input_path);
+        let output_path = unique_output_path(&output_dir, &input_path, &reserved_output_paths);
+        reserved_output_paths.insert(output_path.clone());
         let output_path_string = output_path.display().to_string();
         emit_progress(
             &window,
@@ -400,128 +591,46 @@ pub async fn batch_sign_ipas(
             "packaging",
             app_name.clone(),
             bundle_identifier.clone(),
-            Some(output_path_string.clone()),
+            Some(output_path_string),
             None,
         );
 
-        let packaging_started = Instant::now();
-        let packaging_result = package_signed_app(&signed_app_path, &output_path);
-        timings.packaging_ms = elapsed_ms(packaging_started);
+        let worker_window = window.clone();
+        let worker_input = input.clone();
+        let worker_app_name = app_name.clone();
+        let worker_bundle_identifier = bundle_identifier.clone();
+        let worker_signed_app_path = signed_app_path.clone();
+        let worker_output_path = output_path.clone();
+        let worker_timings = timings.clone();
+        let handle = thread::spawn(move || {
+            post_process_signed_app(
+                worker_window,
+                worker_input,
+                worker_app_name,
+                worker_bundle_identifier,
+                worker_signed_app_path,
+                worker_output_path,
+                item_started,
+                worker_timings,
+            )
+        });
 
-        if let Err(error) = packaging_result {
-            let message = format!("Packaging failed: {error}");
-            let _ = fs::remove_file(&output_path);
-            emit_progress(
-                &window,
-                &input,
-                "failed",
-                app_name.clone(),
-                bundle_identifier.clone(),
-                None,
-                Some(message.clone()),
-            );
-            items.push(failed_item(
-                input,
-                app_name,
-                bundle_identifier,
-                None,
-                message,
-                elapsed_ms(item_started),
-                timings,
-            ));
-            let _ = fs::remove_dir_all(&signed_app_path);
-            continue;
+        pending.push_back(PendingPostProcess {
+            input_path: input,
+            app_name,
+            bundle_identifier,
+            item_started,
+            stage_timings: timings,
+            handle,
+        });
+
+        if pending.len() >= POST_PROCESS_CONCURRENCY {
+            collect_one_pending(&mut pending, &window, &mut items);
         }
+    }
 
-        emit_progress(
-            &window,
-            &input,
-            "validating",
-            app_name.clone(),
-            bundle_identifier.clone(),
-            Some(output_path_string.clone()),
-            None,
-        );
-        let validation_started = Instant::now();
-        let validation_result = validate_signed_ipa_path(&output_path);
-        timings.validation_ms = elapsed_ms(validation_started);
-
-        match validation_result {
-            Ok(validation) if validation.valid => {
-                emit_progress(
-                    &window,
-                    &input,
-                    "signed",
-                    app_name.clone(),
-                    bundle_identifier.clone(),
-                    Some(output_path_string.clone()),
-                    None,
-                );
-                items.push(BatchSigningItemResult {
-                    input_path: input,
-                    app_name,
-                    bundle_identifier,
-                    status: BatchSigningStatus::Signed,
-                    output_path: Some(output_path_string),
-                    validation: Some(validation),
-                    error: None,
-                    duration_ms: elapsed_ms(item_started),
-                    stage_timings: timings,
-                });
-            }
-            Ok(validation) => {
-                let message = "Signed IPA failed structural validation; output was removed.".to_string();
-                let _ = fs::remove_file(&output_path);
-                emit_progress(
-                    &window,
-                    &input,
-                    "failed",
-                    app_name.clone(),
-                    bundle_identifier.clone(),
-                    None,
-                    Some(message.clone()),
-                );
-                items.push(failed_item(
-                    input,
-                    app_name,
-                    bundle_identifier,
-                    Some(validation),
-                    message,
-                    elapsed_ms(item_started),
-                    timings,
-                ));
-            }
-            Err(error) => {
-                let message = format!("Validation failed: {error}");
-                let _ = fs::remove_file(&output_path);
-                emit_progress(
-                    &window,
-                    &input,
-                    "failed",
-                    app_name.clone(),
-                    bundle_identifier.clone(),
-                    None,
-                    Some(message.clone()),
-                );
-                items.push(failed_item(
-                    input,
-                    app_name,
-                    bundle_identifier,
-                    None,
-                    message,
-                    elapsed_ms(item_started),
-                    timings,
-                ));
-            }
-        }
-
-        if let Err(error) = fs::remove_dir_all(&signed_app_path) {
-            tracing::warn!(
-                "Failed to clean signed app temp directory {}: {}",
-                signed_app_path.display(),
-                error
-            );
-        }
+    while !pending.is_empty() {
+        collect_one_pending(&mut pending, &window, &mut items);
     }
 
     let signed = items
@@ -536,6 +645,8 @@ pub async fn batch_sign_ipas(
         &team_id,
         &items,
         batch_duration_ms,
+        SIGNING_CONCURRENCY,
+        POST_PROCESS_CONCURRENCY,
     ) {
         Ok(path) => (Some(path.display().to_string()), None),
         Err(error) => {
@@ -553,6 +664,8 @@ pub async fn batch_sign_ipas(
         failed,
         output_directory,
         batch_duration_ms,
+        signing_concurrency: SIGNING_CONCURRENCY,
+        post_process_concurrency: POST_PROCESS_CONCURRENCY,
         report_path,
         report_error,
         items,
