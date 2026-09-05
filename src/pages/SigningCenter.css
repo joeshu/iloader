@@ -31,6 +31,11 @@
   background: var(--glass-surface);
 }
 
+.signing-health-panel > .signing-asset-grid {
+  margin-top: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
 .signing-health-panel.health-healthy {
   border-color: rgba(71, 214, 132, 0.35);
 }
@@ -54,6 +59,9 @@
 .signing-health-header small {
   opacity: 0.58;
   white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .signing-health-kicker {
@@ -403,5 +411,9 @@
   .signing-health-header {
     flex-direction: column;
     gap: 0.4rem;
+  }
+
+  .signing-health-header small {
+    max-width: 100%;
   }
 }
