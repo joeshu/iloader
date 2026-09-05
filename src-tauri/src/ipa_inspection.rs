@@ -2,7 +2,7 @@ use std::{collections::HashSet, path::PathBuf};
 
 use isideload::{
     dev::{
-        app_ids::{AppId, AppIdsApi},
+        app_ids::AppId,
         certificates::CertificatesApi,
         devices::DevicesApi,
     },
@@ -16,6 +16,7 @@ use crate::{
         EntitlementCompatibilityReport, build_entitlement_compatibility,
     },
     error::AppError,
+    preflight_cache::{app_ids_cached, profile_cached},
     sideload::{SideloaderGuard, SideloaderMutex},
 };
 
@@ -142,10 +143,9 @@ async fn profile_match(
     dev_session: &mut isideload::dev::developer_session::DeveloperSession,
     team: &isideload::dev::teams::DeveloperTeam,
     app_id: &AppId,
+    account_scope: &str,
 ) -> Result<IpaProfileMatch, AppError> {
-    let profile = dev_session
-        .download_team_provisioning_profile(team, app_id, None)
-        .await?;
+    let profile = profile_cached(dev_session, team, app_id, account_scope, false).await?;
 
     Ok(IpaProfileMatch {
         app_id_id: app_id.app_id_id.clone(),
@@ -154,7 +154,7 @@ async fn profile_match(
         profile_uuid: Some(profile.uuid),
         profile_name: Some(profile.name),
         profile_status: Some(profile.status),
-        profile_expiration_date: Some(format!("{:?}", profile.date_expire)),
+        profile_expiration_date: Some(profile.expiration_date),
         is_free_provisioning_profile: profile.is_free_provisioning_profile,
     })
 }
@@ -165,6 +165,7 @@ async fn build_inspection(
     dev_session: &mut isideload::dev::developer_session::DeveloperSession,
     team: &isideload::dev::teams::DeveloperTeam,
     app_ids: &[AppId],
+    account_scope: &str,
 ) -> Result<IpaInspectionResult, AppError> {
     let main_bundle_id = application.main_bundle_id()?;
     let signing_main_bundle_id = format!("{}.{}", main_bundle_id, team.team_id);
@@ -173,7 +174,7 @@ async fn build_inspection(
         .find(|app_id| app_id.identifier == signing_main_bundle_id)
         .cloned();
     let main_match = if let Some(app_id) = main_app_id.as_ref() {
-        Some(profile_match(dev_session, team, app_id).await?)
+        Some(profile_match(dev_session, team, app_id, account_scope).await?)
     } else {
         None
     };
@@ -210,7 +211,7 @@ async fn build_inspection(
             .find(|app_id| app_id.identifier == signing_bundle_identifier)
             .cloned();
         let app_id_match = if let Some(app_id) = matched_app_id.as_ref() {
-            Some(profile_match(dev_session, team, app_id).await?)
+            Some(profile_match(dev_session, team, app_id, account_scope).await?)
         } else {
             None
         };
@@ -440,11 +441,22 @@ pub async fn inspect_ipa_and_match_profiles(
     let application = Application::new(PathBuf::from(&ipa_path))?;
 
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let account_scope = sideloader.get_mut().get_email().to_string();
     let team = sideloader.get_mut().get_team().await?;
     let dev_session = sideloader.get_mut().get_dev_session();
-    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
+    let app_ids = app_ids_cached(dev_session, &team, &account_scope, false)
+        .await?
+        .app_ids;
 
-    build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await
+    build_inspection(
+        &application,
+        ipa_path,
+        dev_session,
+        &team,
+        &app_ids,
+        &account_scope,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -456,12 +468,13 @@ pub async fn preflight_ipa(
     let application = Application::new(PathBuf::from(&ipa_path))?;
 
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let account_scope = sideloader.get_mut().get_email().to_string();
     let team = sideloader.get_mut().get_team().await?;
     let team_id = team.team_id.clone();
     let dev_session = sideloader.get_mut().get_dev_session();
 
     let certificates = dev_session.list_all_development_certs(&team, None).await?;
-    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
+    let app_ids_response = app_ids_cached(dev_session, &team, &account_scope, false).await?;
     let available_app_ids = app_ids_response.available_quantity;
     let app_ids = app_ids_response.app_ids;
     let devices = dev_session.list_devices(&team, None).await?;
@@ -474,6 +487,7 @@ pub async fn preflight_ipa(
         dev_session,
         &team,
         &app_ids,
+        &account_scope,
     )
     .await?;
     let entitlements = build_entitlement_compatibility(
@@ -481,6 +495,7 @@ pub async fn preflight_ipa(
         dev_session,
         &team,
         &app_ids,
+        &account_scope,
     )
     .await?;
 
@@ -503,12 +518,13 @@ pub async fn preflight_ipas(
     device_udid: Option<String>,
 ) -> Result<BatchIpaPreflightReport, AppError> {
     let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let account_scope = sideloader.get_mut().get_email().to_string();
     let team = sideloader.get_mut().get_team().await?;
     let team_id = team.team_id.clone();
     let dev_session = sideloader.get_mut().get_dev_session();
 
     let certificates = dev_session.list_all_development_certs(&team, None).await?;
-    let app_ids_response = dev_session.list_app_ids(&team, None).await?;
+    let app_ids_response = app_ids_cached(dev_session, &team, &account_scope, false).await?;
     let available_app_ids = app_ids_response.available_quantity;
     let app_ids = app_ids_response.app_ids;
     let devices = dev_session.list_devices(&team, None).await?;
@@ -546,6 +562,7 @@ pub async fn preflight_ipas(
             dev_session,
             &team,
             &app_ids,
+            &account_scope,
         )
         .await
         {
@@ -573,6 +590,7 @@ pub async fn preflight_ipas(
             dev_session,
             &team,
             &app_ids,
+            &account_scope,
         )
         .await
         {
