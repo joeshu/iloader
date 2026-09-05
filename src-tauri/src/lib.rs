@@ -9,12 +9,15 @@ mod pairing;
 #[macro_use]
 mod secure_storage;
 mod batch_signing;
+mod diagnostics;
+mod entitlement_compatibility;
 mod error;
 mod ipa_inspection;
 mod logging;
 mod operation;
 mod signing_bundle;
 mod signing_center;
+mod signing_validation;
 
 use crate::{
     account::{
@@ -23,9 +26,11 @@ use crate::{
         revoke_certificate,
     },
     batch_signing::batch_sign_ipas,
+    diagnostics::export_signing_diagnostics,
     device::{
         DeviceInfoMutex, PairingCancelToken, cancel_pairing, list_devices, set_selected_device,
     },
+    entitlement_compatibility::preflight_ipa_entitlements,
     ipa_inspection::{inspect_ipa_and_match_profiles, preflight_ipa, preflight_ipas},
     pairing::{
         delete_stored_rppairing, export_pairing_cmd, has_stored_rppairing, installed_pairing_apps,
@@ -35,6 +40,7 @@ use crate::{
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
     signing_bundle::export_ipa_signing_bundle,
     signing_center::{get_signing_center_snapshot, preflight_signing},
+    signing_validation::validate_signed_ipa,
 };
 use tauri::Manager;
 use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -128,12 +134,15 @@ pub fn run() {
             delete_app_id,
             export_signing_bundle,
             export_ipa_signing_bundle,
+            export_signing_diagnostics,
             get_signing_center_snapshot,
             preflight_signing,
             inspect_ipa_and_match_profiles,
             preflight_ipa,
             preflight_ipas,
+            preflight_ipa_entitlements,
             batch_sign_ipas,
+            validate_signed_ipa,
             installed_pairing_apps,
             place_pairing_cmd,
             reset_anisette_state,

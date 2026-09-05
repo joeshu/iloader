@@ -1,5 +1,6 @@
 use std::{
-    fs::File,
+    collections::HashSet,
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -25,6 +26,12 @@ struct BundleTarget {
     name: String,
     bundle_identifier: String,
     signing_bundle_identifier: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedProfile {
+    info: SigningBundleProfileInfo,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,11 +85,7 @@ fn sanitize_filename(value: &str) -> String {
         })
         .collect();
     let trimmed = sanitized.trim_matches('_');
-    if trimmed.is_empty() {
-        "bundle".into()
-    } else {
-        trimmed.to_string()
-    }
+    if trimmed.is_empty() { "bundle".into() } else { trimmed.to_string() }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -104,8 +107,7 @@ fn add_zip_file(
         .map_err(|error| zip_error("Failed to create signing-bundle ZIP entry", error))?;
     writer
         .write_all(bytes)
-        .map_err(|error| zip_error("Failed to write signing-bundle ZIP entry", error))?;
-    Ok(())
+        .map_err(|error| zip_error("Failed to write signing-bundle ZIP entry", error))
 }
 
 fn build_targets(application: &Application, team_id: &str) -> Result<Vec<BundleTarget>, AppError> {
@@ -140,6 +142,17 @@ fn build_targets(application: &Application, team_id: &str) -> Result<Vec<BundleT
             bundle_identifier,
             signing_bundle_identifier,
         });
+    }
+
+    let mut unique = HashSet::new();
+    if let Some(duplicate) = targets
+        .iter()
+        .find(|target| !unique.insert(target.signing_bundle_identifier.clone()))
+    {
+        return Err(AppError::Misc(format!(
+            "Duplicate signing bundle identifier detected: {}",
+            duplicate.signing_bundle_identifier
+        )));
     }
 
     Ok(targets)
@@ -177,52 +190,41 @@ pub async fn export_ipa_signing_bundle(
         .await?
         .app_ids;
 
+    let resolved_app_ids = targets
+        .iter()
+        .map(|target| {
+            app_ids
+                .iter()
+                .find(|app_id| app_id.identifier == target.signing_bundle_identifier)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Misc(format!(
+                        "No App ID exists for {}. Sign the IPA once or refresh/register the App ID before exporting the complete bundle.",
+                        target.signing_bundle_identifier
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let identity = sideloader
         .get_mut()
         .export_signing_identity(password.as_deref())
         .await?;
 
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-
-    let source_stem = Path::new(&ipa_path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("app");
-    let archive_path = output_dir.join(format!(
-        "{}-signing-bundle.zip",
-        sanitize_filename(source_stem)
-    ));
-    let archive_file = File::create(&archive_path).map_err(|error| {
-        AppError::Filesystem("Failed to create signing-bundle ZIP".into(), error.to_string())
-    })?;
-    let mut writer = ZipWriter::new(archive_file);
-
-    let mut checksum_lines = Vec::new();
-    add_zip_file(&mut writer, "development.p12", &identity.p12, options)?;
-    checksum_lines.push(format!(
-        "{}  development.p12",
-        sha256_hex(&identity.p12)
-    ));
-
-    let mut profiles = Vec::with_capacity(targets.len());
-    for (index, target) in targets.iter().enumerate() {
-        let app_id = app_ids
-            .iter()
-            .find(|app_id| app_id.identifier == target.signing_bundle_identifier)
-            .ok_or_else(|| {
-                AppError::Misc(format!(
-                    "No App ID exists for {}. Sign the IPA once or refresh/register the App ID before exporting the complete bundle.",
-                    target.signing_bundle_identifier
-                ))
-            })?;
-
+    let mut prepared_profiles = Vec::with_capacity(targets.len());
+    let mut profile_uuids = HashSet::new();
+    for (index, (target, app_id)) in targets.iter().zip(resolved_app_ids.iter()).enumerate() {
         let profile = sideloader
             .get_mut()
             .export_provisioning_profile(&app_id.app_id_id)
             .await?;
+        if !profile_uuids.insert(profile.uuid.clone()) {
+            return Err(AppError::Misc(format!(
+                "Duplicate provisioning profile UUID detected while exporting {}: {}",
+                target.signing_bundle_identifier, profile.uuid
+            )));
+        }
+
         let profile_path = if target.role == "main" {
             "profiles/main.mobileprovision".to_string()
         } else {
@@ -233,28 +235,40 @@ pub async fn export_ipa_signing_bundle(
             )
         };
 
-        add_zip_file(&mut writer, &profile_path, &profile.mobileprovision, options)?;
-        checksum_lines.push(format!(
-            "{}  {}",
-            sha256_hex(&profile.mobileprovision),
-            profile_path
-        ));
-        profiles.push(SigningBundleProfileInfo {
-            role: target.role.clone(),
-            name: target.name.clone(),
-            bundle_identifier: target.bundle_identifier.clone(),
-            signing_bundle_identifier: target.signing_bundle_identifier.clone(),
-            profile_uuid: profile.uuid,
-            profile_name: profile.name,
-            profile_expiration_date: profile.expiration_date,
-            is_free_provisioning_profile: profile.is_free_provisioning_profile,
-            archive_path: profile_path,
+        prepared_profiles.push(PreparedProfile {
+            bytes: profile.mobileprovision,
+            info: SigningBundleProfileInfo {
+                role: target.role.clone(),
+                name: target.name.clone(),
+                bundle_identifier: target.bundle_identifier.clone(),
+                signing_bundle_identifier: target.signing_bundle_identifier.clone(),
+                profile_uuid: profile.uuid,
+                profile_name: profile.name,
+                profile_expiration_date: profile.expiration_date,
+                is_free_provisioning_profile: profile.is_free_provisioning_profile,
+                archive_path: profile_path,
+            },
         });
     }
 
+    let profiles = prepared_profiles
+        .iter()
+        .map(|prepared| prepared.info.clone())
+        .collect::<Vec<_>>();
+    let source_name = Path::new(&ipa_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("app.ipa");
+    let source_stem = Path::new(source_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("app");
+
     let metadata = SigningBundleMetadata {
         format_version: 1,
-        source_ipa: &ipa_path,
+        source_ipa: source_name,
         team_id: &identity.team_id,
         certificate_serial_number: &identity.certificate_serial_number,
         machine_id: &identity.machine_id,
@@ -265,17 +279,59 @@ pub async fn export_ipa_signing_bundle(
     };
     let metadata_bytes = serde_json::to_vec_pretty(&metadata)
         .map_err(|error| AppError::Misc(format!("Failed to serialize signing-bundle metadata: {error}")))?;
-    add_zip_file(&mut writer, "metadata.json", &metadata_bytes, options)?;
-    checksum_lines.push(format!(
-        "{}  metadata.json",
-        sha256_hex(&metadata_bytes)
-    ));
 
-    let checksums_bytes = format!("{}\n", checksum_lines.join("\n")).into_bytes();
-    add_zip_file(&mut writer, "checksums.sha256", &checksums_bytes, options)?;
-    writer
-        .finish()
-        .map_err(|error| zip_error("Failed to finalize signing-bundle ZIP", error))?;
+    fs::create_dir_all(&output_dir).map_err(|error| {
+        AppError::Filesystem("Failed to create signing-bundle output directory".into(), error.to_string())
+    })?;
+    let archive_path = output_dir.join(format!(
+        "{}-signing-bundle.zip",
+        sanitize_filename(source_stem)
+    ));
+    let part_path = archive_path.with_extension("zip.part");
+    let archive_file = File::create(&part_path).map_err(|error| {
+        AppError::Filesystem("Failed to create signing-bundle ZIP".into(), error.to_string())
+    })?;
+    let mut writer = ZipWriter::new(archive_file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+
+    let write_result = (|| -> Result<Vec<String>, AppError> {
+        let mut checksum_lines = Vec::new();
+        add_zip_file(&mut writer, "development.p12", &identity.p12, options)?;
+        checksum_lines.push(format!("{}  development.p12", sha256_hex(&identity.p12)));
+
+        for prepared in &prepared_profiles {
+            add_zip_file(&mut writer, &prepared.info.archive_path, &prepared.bytes, options)?;
+            checksum_lines.push(format!(
+                "{}  {}",
+                sha256_hex(&prepared.bytes),
+                prepared.info.archive_path
+            ));
+        }
+
+        add_zip_file(&mut writer, "metadata.json", &metadata_bytes, options)?;
+        checksum_lines.push(format!("{}  metadata.json", sha256_hex(&metadata_bytes)));
+        let checksums_bytes = format!("{}\n", checksum_lines.join("\n")).into_bytes();
+        add_zip_file(&mut writer, "checksums.sha256", &checksums_bytes, options)?;
+        writer
+            .finish()
+            .map_err(|error| zip_error("Failed to finalize signing-bundle ZIP", error))?;
+        Ok(checksum_lines)
+    })();
+
+    let checksum_lines = match write_result {
+        Ok(lines) => lines,
+        Err(error) => {
+            let _ = fs::remove_file(&part_path);
+            return Err(error);
+        }
+    };
+
+    fs::rename(&part_path, &archive_path).map_err(|error| {
+        let _ = fs::remove_file(&part_path);
+        AppError::Filesystem("Failed to publish signing-bundle ZIP atomically".into(), error.to_string())
+    })?;
 
     Ok(Some(SigningBundleExportInfo {
         archive_path: archive_path.display().to_string(),
