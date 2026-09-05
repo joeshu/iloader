@@ -12,6 +12,9 @@ use serde::Serialize;
 use tauri::{Emitter, State, Window};
 
 use crate::{
+    entitlement_compatibility::{
+        EntitlementCompatibilityReport, build_entitlement_compatibility,
+    },
     error::AppError,
     sideload::{SideloaderGuard, SideloaderMutex},
 };
@@ -76,6 +79,7 @@ pub struct AutoIpaPreflightReport {
     pub ready: bool,
     pub team_id: String,
     pub inspection: IpaInspectionResult,
+    pub entitlements: EntitlementCompatibilityReport,
     pub checks: Vec<AutoPreflightCheck>,
 }
 
@@ -246,6 +250,7 @@ async fn build_inspection(
 fn build_preflight_report(
     team_id: &str,
     inspection: IpaInspectionResult,
+    entitlements: EntitlementCompatibilityReport,
     certificate_count: usize,
     available_app_ids: Option<i64>,
     device_udid: Option<&str>,
@@ -364,6 +369,31 @@ fn build_preflight_report(
         }
     }
 
+    checks.push(AutoPreflightCheck {
+        code: "entitlements.compatibility".into(),
+        severity: if entitlements.blocking_count > 0 {
+            AutoPreflightSeverity::Error
+        } else if entitlements.warning_count > 0 {
+            AutoPreflightSeverity::Warning
+        } else {
+            AutoPreflightSeverity::Info
+        },
+        passed: entitlements.blocking_count == 0,
+        message: if entitlements.blocking_count > 0 {
+            format!(
+                "Entitlement compatibility found {} blocking issue(s) and {} warning(s).",
+                entitlements.blocking_count, entitlements.warning_count
+            )
+        } else if entitlements.warning_count > 0 {
+            format!(
+                "Entitlement compatibility found no blocking issues and {} warning(s).",
+                entitlements.warning_count
+            )
+        } else {
+            "Entitlement compatibility found no blocking issues or warnings.".into()
+        },
+    });
+
     if let Some(udid) = device_udid {
         let registered = device_registered.unwrap_or(false);
         checks.push(AutoPreflightCheck {
@@ -397,6 +427,7 @@ fn build_preflight_report(
         ready,
         team_id: team_id.to_string(),
         inspection,
+        entitlements,
         checks,
     }
 }
@@ -437,11 +468,26 @@ pub async fn preflight_ipa(
     let device_registered = device_udid
         .as_deref()
         .map(|udid| devices.iter().any(|device| device.device_number == udid));
-    let inspection = build_inspection(&application, ipa_path, dev_session, &team, &app_ids).await?;
+    let inspection = build_inspection(
+        &application,
+        ipa_path,
+        dev_session,
+        &team,
+        &app_ids,
+    )
+    .await?;
+    let entitlements = build_entitlement_compatibility(
+        &application,
+        dev_session,
+        &team,
+        &app_ids,
+    )
+    .await?;
 
     Ok(build_preflight_report(
         &team_id,
         inspection,
+        entitlements,
         certificates.len(),
         available_app_ids,
         device_udid.as_deref(),
@@ -494,7 +540,7 @@ pub async fn preflight_ipas(
             }
         };
 
-        match build_inspection(
+        let inspection = match build_inspection(
             &application,
             ipa_path.clone(),
             dev_session,
@@ -503,28 +549,7 @@ pub async fn preflight_ipas(
         )
         .await
         {
-            Ok(inspection) => {
-                let report = build_preflight_report(
-                    &team_id,
-                    inspection,
-                    certificates.len(),
-                    available_app_ids,
-                    device_udid.as_deref(),
-                    device_registered,
-                );
-                emit_batch_preflight_progress(
-                    &window,
-                    &ipa_path,
-                    if report.ready { "ready" } else { "blocked" },
-                    Some(report.ready),
-                    None,
-                );
-                items.push(BatchIpaPreflightItem {
-                    input_path: ipa_path,
-                    report: Some(report),
-                    error: None,
-                });
-            }
+            Ok(inspection) => inspection,
             Err(error) => {
                 let message = format!("Preflight failed: {error:?}");
                 emit_batch_preflight_progress(
@@ -539,8 +564,58 @@ pub async fn preflight_ipas(
                     report: None,
                     error: Some(message),
                 });
+                continue;
             }
-        }
+        };
+
+        let entitlements = match build_entitlement_compatibility(
+            &application,
+            dev_session,
+            &team,
+            &app_ids,
+        )
+        .await
+        {
+            Ok(report) => report,
+            Err(error) => {
+                let message = format!("Entitlement preflight failed: {error:?}");
+                emit_batch_preflight_progress(
+                    &window,
+                    &ipa_path,
+                    "failed",
+                    Some(false),
+                    Some(message.clone()),
+                );
+                items.push(BatchIpaPreflightItem {
+                    input_path: ipa_path,
+                    report: None,
+                    error: Some(message),
+                });
+                continue;
+            }
+        };
+
+        let report = build_preflight_report(
+            &team_id,
+            inspection,
+            entitlements,
+            certificates.len(),
+            available_app_ids,
+            device_udid.as_deref(),
+            device_registered,
+        );
+        emit_batch_preflight_progress(
+            &window,
+            &ipa_path,
+            if report.ready { "ready" } else { "blocked" },
+            Some(report.ready),
+            None,
+        );
+        items.push(BatchIpaPreflightItem {
+            input_path: ipa_path,
+            report: Some(report),
+            error: None,
+        });
     }
 
     if let Some(available) = available_app_ids.filter(|available| *available >= 0) {
