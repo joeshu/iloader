@@ -1,0 +1,278 @@
+.signing-center {
+  width: min(1120px, 88vw);
+  min-width: min(760px, 88vw);
+  color: inherit;
+}
+
+.signing-center-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.signing-center-header h2 {
+  margin: 0 0 0.35rem;
+}
+
+.signing-center-subtitle {
+  margin: 0;
+  max-width: 760px;
+  opacity: 0.72;
+  line-height: 1.45;
+}
+
+.signing-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.signing-asset-card {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-surface);
+  border-radius: 16px;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.signing-asset-card span,
+.signing-output-path span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.58;
+}
+
+.signing-asset-card strong {
+  font-size: 1.35rem;
+  margin: 0.2rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-asset-card small {
+  opacity: 0.68;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.signing-toolbar button {
+  min-height: 2.6rem;
+}
+
+.signing-primary {
+  font-weight: 700;
+}
+
+.signing-output-path {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.65rem;
+  min-width: 0;
+}
+
+.signing-output-path strong {
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.7rem;
+}
+
+.signing-summary span {
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 0.28rem 0.6rem;
+  font-size: 0.75rem;
+  opacity: 0.84;
+}
+
+.signing-empty {
+  border: 1px dashed var(--glass-border);
+  border-radius: 16px;
+  padding: 2rem;
+  text-align: center;
+  opacity: 0.7;
+  line-height: 1.5;
+}
+
+.signing-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.signing-queue-item {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-surface);
+  border-radius: 16px;
+  padding: 0.85rem;
+}
+
+.signing-queue-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.signing-file-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.signing-file-meta strong,
+.signing-file-meta span,
+.signing-file-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-file-meta span {
+  font-size: 0.82rem;
+  opacity: 0.75;
+}
+
+.signing-file-meta small {
+  font-size: 0.72rem;
+  opacity: 0.58;
+}
+
+.signing-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.signing-status {
+  border-radius: 999px;
+  padding: 0.3rem 0.62rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.status-ready,
+.status-signed {
+  border-color: rgba(71, 214, 132, 0.45);
+  background: rgba(71, 214, 132, 0.12);
+}
+
+.status-blocked,
+.status-failed {
+  border-color: rgba(255, 94, 94, 0.45);
+  background: rgba(255, 94, 94, 0.12);
+}
+
+.status-scanning,
+.status-inspecting,
+.status-signing,
+.status-packaging {
+  border-color: rgba(94, 164, 255, 0.5);
+  background: rgba(94, 164, 255, 0.12);
+}
+
+.signing-remove {
+  padding: 0.32rem 0.55rem;
+  min-height: unset;
+  font-size: 0.72rem;
+}
+
+.signing-profile-line {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.65rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--glass-border);
+  font-size: 0.78rem;
+}
+
+.signing-profile-line span {
+  opacity: 0.65;
+}
+
+.signing-profile-line strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-note,
+.signing-result-path,
+.signing-checks {
+  margin-top: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.signing-note {
+  background: rgba(94, 164, 255, 0.08);
+  border: 1px solid rgba(94, 164, 255, 0.2);
+}
+
+.signing-result-path {
+  background: rgba(71, 214, 132, 0.08);
+  border: 1px solid rgba(71, 214, 132, 0.2);
+}
+
+.signing-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.signing-checks-error {
+  background: rgba(255, 94, 94, 0.08);
+  border: 1px solid rgba(255, 94, 94, 0.2);
+}
+
+.signing-checks-warning {
+  background: rgba(255, 190, 71, 0.08);
+  border: 1px solid rgba(255, 190, 71, 0.2);
+}
+
+@media (max-width: 900px) {
+  .signing-center {
+    width: 88vw;
+    min-width: 0;
+  }
+
+  .signing-asset-grid,
+  .signing-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
