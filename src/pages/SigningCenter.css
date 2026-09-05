@@ -23,6 +23,130 @@
   line-height: 1.45;
 }
 
+.signing-health-panel {
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 0.85rem;
+  margin-bottom: 0.85rem;
+  background: var(--glass-surface);
+}
+
+.signing-health-panel > .signing-asset-grid {
+  margin-top: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
+.signing-health-panel.health-healthy {
+  border-color: rgba(71, 214, 132, 0.35);
+}
+
+.signing-health-panel.health-warning {
+  border-color: rgba(255, 190, 71, 0.4);
+}
+
+.signing-health-panel.health-error {
+  border-color: rgba(255, 94, 94, 0.45);
+}
+
+.signing-health-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
+}
+
+.signing-health-header small {
+  opacity: 0.58;
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.signing-health-kicker {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  opacity: 0.58;
+  margin-bottom: 0.18rem;
+}
+
+.signing-health-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.signing-health-title-row > strong {
+  font-size: 1.05rem;
+}
+
+.signing-health-badge,
+.signing-health-check-title span {
+  border-radius: 999px;
+  padding: 0.2rem 0.48rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  border: 1px solid var(--glass-border);
+}
+
+.signing-health-badge.health-healthy,
+.signing-health-check.health-healthy .signing-health-check-title span {
+  border-color: rgba(71, 214, 132, 0.4);
+  background: rgba(71, 214, 132, 0.1);
+}
+
+.signing-health-badge.health-warning,
+.signing-health-check.health-warning .signing-health-check-title span {
+  border-color: rgba(255, 190, 71, 0.45);
+  background: rgba(255, 190, 71, 0.1);
+}
+
+.signing-health-badge.health-error,
+.signing-health-check.health-error .signing-health-check-title span {
+  border-color: rgba(255, 94, 94, 0.45);
+  background: rgba(255, 94, 94, 0.1);
+}
+
+.signing-health-checks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.signing-health-check {
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 0.65rem;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.signing-health-check-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  margin-bottom: 0.32rem;
+}
+
+.signing-health-check-title strong {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signing-health-check small {
+  display: block;
+  opacity: 0.68;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
 .signing-asset-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -196,7 +320,8 @@
 .status-scanning,
 .status-inspecting,
 .status-signing,
-.status-packaging {
+.status-packaging,
+.status-validating {
   border-color: rgba(94, 164, 255, 0.5);
   background: rgba(94, 164, 255, 0.12);
 }
@@ -272,7 +397,25 @@
   }
 
   .signing-asset-grid,
-  .signing-toolbar {
+  .signing-toolbar,
+  .signing-health-checks {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .signing-health-checks,
+  .signing-asset-grid,
+  .signing-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .signing-health-header {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .signing-health-header small {
+    max-width: 100%;
   }
 }

@@ -8,6 +8,7 @@ mod sideload;
 mod pairing;
 #[macro_use]
 mod secure_storage;
+mod asset_health;
 mod batch_signing;
 mod diagnostics;
 mod entitlement_compatibility;
@@ -15,8 +16,11 @@ mod error;
 mod ipa_inspection;
 mod logging;
 mod operation;
+mod preflight_cache;
 mod signing_bundle;
+mod signing_bundle_import;
 mod signing_center;
+mod signing_report;
 mod signing_validation;
 
 use crate::{
@@ -25,6 +29,7 @@ use crate::{
         list_app_ids, logged_in_as, login_new, login_stored, reset_anisette_state,
         revoke_certificate,
     },
+    asset_health::get_signing_asset_health,
     batch_signing::batch_sign_ipas,
     diagnostics::export_signing_diagnostics,
     device::{
@@ -39,6 +44,7 @@ use crate::{
     secure_storage::{force_disable_keyring, keyring_available},
     sideload::{SideloaderMutex, install_sidestore_operation, sideload_operation},
     signing_bundle::export_ipa_signing_bundle,
+    signing_bundle_import::inspect_signing_bundle_import,
     signing_center::{get_signing_center_snapshot, preflight_signing},
     signing_validation::validate_signed_ipa,
 };
@@ -134,8 +140,10 @@ pub fn run() {
             delete_app_id,
             export_signing_bundle,
             export_ipa_signing_bundle,
+            inspect_signing_bundle_import,
             export_signing_diagnostics,
             get_signing_center_snapshot,
+            get_signing_asset_health,
             preflight_signing,
             inspect_ipa_and_match_profiles,
             preflight_ipa,
