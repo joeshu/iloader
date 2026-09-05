@@ -2,7 +2,11 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use apple_codesign::ProvisioningProfile;
 use isideload::{
-    dev::app_ids::AppIdsApi,
+    dev::{
+        app_ids::{AppId, AppIdsApi},
+        developer_session::DeveloperSession,
+        teams::DeveloperTeam,
+    },
     sideload::{application::Application, bundle::Bundle},
 };
 use plist::Dictionary;
@@ -119,6 +123,7 @@ fn embedded_profile_entitlements(bundle: &Bundle) -> Result<Option<Dictionary>, 
     if !path.exists() {
         return Ok(None);
     }
+
     let bytes = fs::read(&path).map_err(|error| {
         AppError::Filesystem(
             format!("Failed to read source provisioning profile at {}", path.display()),
@@ -133,14 +138,6 @@ fn compare_entitlements(
     target: Option<&Dictionary>,
     target_pending_registration: bool,
 ) -> Vec<EntitlementCompatibilityItem> {
-    let mut keys = BTreeSet::new();
-    if let Some(source) = source {
-        keys.extend(source.keys().cloned());
-    }
-    if let Some(target) = target {
-        keys.extend(target.keys().cloned());
-    }
-
     if source.is_none() {
         return vec![EntitlementCompatibilityItem {
             key: "source.profile".into(),
@@ -152,7 +149,13 @@ fn compare_entitlements(
         }];
     }
 
-    let source = source.expect("checked above");
+    let source = source.expect("source profile checked above");
+    let mut keys = BTreeSet::new();
+    keys.extend(source.keys().cloned());
+    if let Some(target) = target {
+        keys.extend(target.keys().cloned());
+    }
+
     let mut items = Vec::new();
     for key in keys {
         let source_value = source.get(&key);
@@ -225,7 +228,10 @@ fn compare_entitlements(
     items
 }
 
-fn build_targets<'a>(application: &'a Application, team_id: &str) -> Result<Vec<BundleTarget<'a>>, AppError> {
+fn build_targets<'a>(
+    application: &'a Application,
+    team_id: &str,
+) -> Result<Vec<BundleTarget<'a>>, AppError> {
     let main_bundle_id = application.main_bundle_id()?;
     let signing_main_bundle_id = format!("{}.{}", main_bundle_id, team_id);
     let mut targets = vec![BundleTarget {
@@ -238,7 +244,9 @@ fn build_targets<'a>(application: &'a Application, team_id: &str) -> Result<Vec<
 
     for extension in application.bundle.app_extensions() {
         let bundle_identifier = extension.bundle_identifier().unwrap_or("").to_string();
-        if !bundle_identifier.starts_with(&main_bundle_id) || bundle_identifier.len() <= main_bundle_id.len() {
+        if !bundle_identifier.starts_with(&main_bundle_id)
+            || bundle_identifier.len() <= main_bundle_id.len()
+        {
             return Err(AppError::Misc(format!(
                 "Extension bundle identifier {bundle_identifier} is not derived from main bundle identifier {main_bundle_id}"
             )));
@@ -258,23 +266,13 @@ fn build_targets<'a>(application: &'a Application, team_id: &str) -> Result<Vec<
     Ok(targets)
 }
 
-#[tauri::command]
-pub async fn preflight_ipa_entitlements(
-    sideloader_state: State<'_, SideloaderMutex>,
-    ipa_path: String,
+pub async fn build_entitlement_compatibility(
+    application: &Application,
+    dev_session: &mut DeveloperSession,
+    team: &DeveloperTeam,
+    app_ids: &[AppId],
 ) -> Result<EntitlementCompatibilityReport, AppError> {
-    let application = Application::new(PathBuf::from(&ipa_path))?;
-    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
-    let team = sideloader.get_mut().get_team().await?;
-    let team_id = team.team_id.clone();
-    let app_ids = sideloader
-        .get_mut()
-        .get_dev_session()
-        .list_app_ids(&team, None)
-        .await?
-        .app_ids;
-    let targets = build_targets(&application, &team_id)?;
-
+    let targets = build_targets(application, &team.team_id)?;
     let mut bundles = Vec::with_capacity(targets.len());
     let mut blocking_count = 0usize;
     let mut warning_count = 0usize;
@@ -285,19 +283,29 @@ pub async fn preflight_ipa_entitlements(
             .iter()
             .find(|app_id| app_id.identifier == target.signing_bundle_identifier);
         let target_entitlements = if let Some(app_id) = matching_app_id {
-            let profile = sideloader
-                .get_mut()
-                .get_dev_session()
-                .download_team_provisioning_profile(&team, app_id, None)
+            let profile = dev_session
+                .download_team_provisioning_profile(team, app_id, None)
                 .await?;
             Some(profile_entitlements(profile.encoded_profile.as_ref())?)
         } else {
             None
         };
-        let items = compare_entitlements(source.as_ref(), target_entitlements.as_ref(), matching_app_id.is_none());
-        let blocking = items.iter().any(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Error));
-        blocking_count += items.iter().filter(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Error)).count();
-        warning_count += items.iter().filter(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Warning)).count();
+        let items = compare_entitlements(
+            source.as_ref(),
+            target_entitlements.as_ref(),
+            matching_app_id.is_none(),
+        );
+        let blocking = items
+            .iter()
+            .any(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Error));
+        blocking_count += items
+            .iter()
+            .filter(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Error))
+            .count();
+        warning_count += items
+            .iter()
+            .filter(|item| matches!(item.severity, EntitlementCompatibilitySeverity::Warning))
+            .count();
 
         bundles.push(BundleEntitlementCompatibility {
             role: target.role.into(),
@@ -313,9 +321,23 @@ pub async fn preflight_ipa_entitlements(
 
     Ok(EntitlementCompatibilityReport {
         ready: blocking_count == 0,
-        team_id,
+        team_id: team.team_id.clone(),
         bundles,
         blocking_count,
         warning_count,
     })
+}
+
+#[tauri::command]
+pub async fn preflight_ipa_entitlements(
+    sideloader_state: State<'_, SideloaderMutex>,
+    ipa_path: String,
+) -> Result<EntitlementCompatibilityReport, AppError> {
+    let application = Application::new(PathBuf::from(&ipa_path))?;
+    let mut sideloader = SideloaderGuard::take(&sideloader_state)?;
+    let team = sideloader.get_mut().get_team().await?;
+    let dev_session = sideloader.get_mut().get_dev_session();
+    let app_ids = dev_session.list_app_ids(&team, None).await?.app_ids;
+
+    build_entitlement_compatibility(&application, dev_session, &team, &app_ids).await
 }
