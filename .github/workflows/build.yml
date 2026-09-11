@@ -28,7 +28,7 @@ jobs:
             src-tauri/target
             node_modules
             ~/.bun/install/cache
-          key: windows-iloader-${{ hashFiles('**/Cargo.lock', 'package-lock.json', 'bun.lock') }}
+          key: windows-iloader-${{ hashFiles('**/Cargo.lock', 'bun.lock') }}
           restore-keys: |
             Windows-iloader-
 
@@ -44,7 +44,7 @@ jobs:
           Write-Host "MSVC environment provided by windows-latest"
 
       - name: Install frontend dependencies
-        run: npm install
+        run: bun install --frozen-lockfile
 
       - name: Run Rust regression tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
@@ -58,7 +58,7 @@ jobs:
           $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
 
       - name: Build
-        run: npm run tauri build
+        run: bun run tauri build
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v7

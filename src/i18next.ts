@@ -5,10 +5,12 @@ import LanguageDetector from "i18next-browser-languagedetector";
 const languages = [
   ["az", "Azərbaycan"],
   ["en", "English"],
+  ["el", "Ελληνικά"],
   ["am", "Հայերեն"],
   ["es", "Español"],
   ["it", "Italiano"],
   ["de", "Deutsch"],
+  ["de_ch", "Schweizerdeutsch"],
   ["fr", "Français"],
   ["pl", "Polski"],
   ["nl", "Nederlands"],

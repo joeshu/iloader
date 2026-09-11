@@ -1,0 +1,24 @@
+name: Generate integration lockfiles
+
+on:
+  push:
+    branches:
+      - "sync/upstream-348eefd"
+
+jobs:
+  generate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - name: Verify Bun lockfile
+        run: bun install --frozen-lockfile
+      - name: Generate Cargo.lock from final manifest
+        run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+      - name: Upload generated Cargo.lock
+        uses: actions/upload-artifact@v7
+        with:
+          name: generated-cargo-lock
+          path: src-tauri/Cargo.lock
+          if-no-files-found: error
