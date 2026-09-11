@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "iloader"
-version = "2.4.2"
+version = "2.4.3"
 dependencies = [
  "apple-codesign 0.1.0 (git+https://github.com/Dadoum/apple-crates?rev=a505b2a7c4bd5b9ecba75c17c10c3de8bdbc0f24)",
  "chrono",
