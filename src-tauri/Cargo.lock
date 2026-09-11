@@ -106,6 +106,28 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "apple-codesign"
 version = "0.1.0"
+source = "git+https://github.com/Dadoum/apple-crates?rev=a505b2a7c4bd5b9ecba75c17c10c3de8bdbc0f24#a505b2a7c4bd5b9ecba75c17c10c3de8bdbc0f24"
+dependencies = [
+ "byteorder",
+ "cms 0.2.3",
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "memmap2",
+ "pem-rfc7468 0.7.0",
+ "plist",
+ "rayon",
+ "rsa",
+ "sha1 0.11.0",
+ "sha2 0.10.9",
+ "sha2 0.11.0",
+ "spki 0.7.3",
+ "thiserror 2.0.20",
+ "x509-cert 0.2.5",
+]
+
+[[package]]
+name = "apple-codesign"
+version = "0.1.0"
 source = "git+https://github.com/nab138/apple-crates#5da0b8df9b202434b1eff2700059b1ee142592ac"
 dependencies = [
  "byteorder",
@@ -2618,8 +2640,9 @@ dependencies = [
 
 [[package]]
 name = "iloader"
-version = "2.3.2"
+version = "2.4.2"
 dependencies = [
+ "apple-codesign 0.1.0 (git+https://github.com/Dadoum/apple-crates?rev=a505b2a7c4bd5b9ecba75c17c10c3de8bdbc0f24)",
  "chrono",
  "futures",
  "idevice",
@@ -2633,6 +2656,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "strum",
  "tauri",
  "tauri-build",
@@ -2641,12 +2665,14 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -2729,11 +2755,11 @@ dependencies = [
 [[package]]
 name = "isideload"
 version = "0.3.17"
-source = "git+https://github.com/nab138/isideload?branch=apple-codesign-quick#f6a4d5dba717d72fc2af63eaba26b27ba44116be"
+source = "git+https://github.com/joeshu/isideload?rev=54353306236c08c41002c0e8a9a3513b9672a093#54353306236c08c41002c0e8a9a3513b9672a093"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",
- "apple-codesign",
+ "apple-codesign 0.1.0 (git+https://github.com/nab138/apple-crates)",
  "async-trait",
  "base64 0.22.1",
  "cbc 0.2.1",
@@ -4189,7 +4215,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit 0.25.14+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
 ]
 
 [[package]]
@@ -5232,9 +5258,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.0"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
 name = "socket2"
@@ -6237,9 +6263,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.14+spec-1.1.0"
+version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2195eec204e2764644a4ea619704f9fbe5e0673038eded55ad9956f24fca0cc"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",
