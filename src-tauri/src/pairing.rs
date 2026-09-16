@@ -329,7 +329,7 @@ pub async fn pairing_file(
         return Ok(plist_to_xml_bytes(&lockdown_dict));
     }
 
-    let cache_key = format!("rppairing_file_{}", device.udid);
+    let cache_key = rppairing_cache_key(&device.udid, &device.version);
 
     let cached_rppairing = with_pairing_storage(app, |storage| {
         storage.retrieve_data(&cache_key).map_err(|e| {
@@ -412,13 +412,18 @@ pub async fn delete_stored_rppairing(
         }
     };
 
-    let cache_key = format!("rppairing_file_{}", device.info.udid);
+    let cache_key = rppairing_cache_key(&device.info.udid, &device.info.version);
 
-    with_pairing_storage(&app, |storage| {
-        storage.delete(&cache_key).map_err(|e| {
-            AppError::Storage("Failed to delete stored RPPairing".into(), e.to_string())
-        })
-    })?;
+    for cache_key in [
+        cache_key,
+        legacy_rppairing_cache_key(&device.info.udid),
+    ] {
+        with_pairing_storage(&app, |storage| {
+            storage.delete(&cache_key).map_err(|e| {
+                AppError::Storage("Failed to delete stored RPPairing".into(), e.to_string())
+            })
+        })?;
+    }
 
     Ok(())
 }
@@ -429,7 +434,7 @@ pub async fn has_stored_rppairing(device: DeviceInfo, app: AppHandle) -> Result<
     if is_ios_version_below(&device.version, 17, 4) {
         return Ok(true);
     }
-    let cache_key = format!("rppairing_file_{}", device.udid);
+    let cache_key = rppairing_cache_key(&device.udid, &device.version);
 
     with_pairing_storage(&app, |storage| {
         storage.retrieve_data(&cache_key).map_err(|e| {
@@ -539,6 +544,40 @@ pub async fn get_sidestore_info(
     }
 
     Ok(None)
+}
+
+const RPAIRING_CACHE_SCHEMA: &str = "v2";
+
+fn sanitize_cache_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn rppairing_cache_key(udid: &str, ios_version: &str) -> String {
+    format!(
+        "rppairing_file_{}_{}_{}",
+        RPAIRING_CACHE_SCHEMA,
+        sanitize_cache_component(udid),
+        sanitize_cache_component(ios_version)
+    )
+}
+
+fn legacy_rppairing_cache_key(udid: &str) -> String {
+    format!("rppairing_file_{}", udid)
 }
 
 fn parse_version_component(segment: Option<&str>) -> u32 {
